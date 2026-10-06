@@ -1,0 +1,2 @@
+model,mae,rmse,r2,nasa_score,training_time,norm_rmse,norm_mae,norm_nasa_score,composite_score
+lstm,29.14310835706996,31.73523542807912,-0.1397265251097426,160747.21160696167,20.1,0.0,0.0,0.0,0.0

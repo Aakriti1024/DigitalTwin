@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Autonomous Agentic Digital Twin — Turbofan Engine</title>
+
+  <!-- Google Fonts -->
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <!-- Font Awesome -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- ===================== HEADER ===================== -->
+<header class="app-header">
+  <div class="header-left">
+    <i class="fa-solid fa-jet-fighter-up header-icon"></i>
+    <div class="header-titles">
+      <h1 class="app-title">Autonomous Agentic Digital Twin</h1>
+      <p class="app-subtitle">Turbofan Engine Health Monitoring &amp; Predictive Maintenance</p>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="engine-selector-wrap">
+      <label for="engineSelect"><i class="fa-solid fa-gear"></i> Engine</label>
+      <select id="engineSelect">
+        <option value="E1" selected>E1</option>
+        <option value="E2">E2</option>
+        <option value="E3">E3</option>
+        <option value="E4">E4</option>
+      </select>
+    </div>
+    <div class="connection-status" id="connectionStatus">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusLabel">Connecting…</span>
+    </div>
+    <div class="last-updated">
+      <i class="fa-regular fa-clock"></i>
+      <span id="lastUpdated">—</span>
+    </div>
+  </div>
+</header>
+
+<!-- ===================== MAIN CONTENT ===================== -->
+<main class="dashboard-grid">
+
+  <!-- ========== ROW 1: TOP STATS ========== -->
+  <section class="row stats-row">
+
+    <div class="stat-card" id="cardHealthState">
+      <div class="stat-icon"><i class="fa-solid fa-heart-pulse"></i></div>
+      <div class="stat-content">
+        <p class="stat-label">Engine Health State</p>
+        <div class="stat-badge-wrap">
+          <span class="health-badge" id="healthStateBadge">—</span>
+        </div>
+        <p class="stat-sub" id="statusMessage">Awaiting data…</p>
+      </div>
+    </div>
+
+    <div class="stat-card" id="cardRUL">
+      <div class="stat-icon"><i class="fa-solid fa-hourglass-half"></i></div>
+      <div class="stat-content">
+        <p class="stat-label">Predicted RUL</p>
+        <div class="rul-display">
+          <span class="rul-value" id="rulValue">—</span>
+          <span class="rul-unit">cycles</span>
+        </div>
+        <p class="stat-sub rul-uncertainty" id="rulUncertainty">± — cycles</p>
+      </div>
+    </div>
+
+    <div class="stat-card" id="cardRisk">
+      <div class="stat-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+      <div class="stat-content">
+        <p class="stat-label">Risk Level</p>
+        <div class="stat-badge-wrap">
+          <span class="risk-badge" id="riskBadge">—</span>
+        </div>
+        <p class="stat-sub" id="riskSubtext">—</p>
+      </div>
+    </div>
+
+    <div class="stat-card" id="cardHealth">
+      <div class="stat-icon"><i class="fa-solid fa-shield-heart"></i></div>
+      <div class="stat-content">
+        <p class="stat-label">Health Score</p>
+        <div class="health-score-wrap">
+          <span class="health-score-value" id="healthScoreValue">—</span>
+          <span class="health-score-unit">%</span>
+        </div>
+        <div class="progress-bar-wrap">
+          <div class="progress-bar" id="healthProgressBar" style="width: 0%"></div>
+        </div>
+        <p class="stat-sub" id="healthScoreSub">—</p>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ========== ROW 2: RUL TREND + HEALTH GAUGE ========== -->
+  <section class="row charts-row">
+
+    <div class="card chart-card rul-trend-card">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-chart-line"></i> RUL Trend</h2>
+        <span class="card-badge">Last 50 Cycles</span>
+      </div>
+      <div class="chart-container">
+        <canvas id="rulTrendChart"></canvas>
+      </div>
+    </div>
+
+    <div class="card chart-card health-gauge-card">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-gauge-high"></i> Engine Health Gauge</h2>
+      </div>
+      <div class="chart-container gauge-container">
+        <canvas id="healthGaugeChart"></canvas>
+        <div class="gauge-center-text">
+          <span id="gaugeCenterValue">—</span>
+          <small>Health %</small>
+        </div>
+      </div>
+    </div>
+
+  </section>
+
+  <!-- ========== ROW 3: SENSOR TRENDS ========== -->
+  <section class="row sensor-row">
+    <div class="card full-width-card">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-wave-square"></i> Key Sensor Trends</h2>
+        <span class="card-badge">Normalized Values · Last 50 Cycles</span>
+      </div>
+      <div class="sensor-selector" id="sensorSelector">
+        <button class="sensor-btn active" data-sensor="s2">S2 – Fan inlet temp</button>
+        <button class="sensor-btn active" data-sensor="s3">S3 – LPC outlet temp</button>
+        <button class="sensor-btn active" data-sensor="s4">S4 – HPC outlet temp</button>
+        <button class="sensor-btn active" data-sensor="s7">S7 – HPC outlet pressure</button>
+        <button class="sensor-btn active" data-sensor="s9">S9 – Engine pressure ratio</button>
+        <button class="sensor-btn active" data-sensor="s11">S11 – HPC outlet static pressure</button>
+        <button class="sensor-btn" data-sensor="s12">S12 – Ratio of fuel flow</button>
+        <button class="sensor-btn" data-sensor="s14">S14 – BPR</button>
+        <button class="sensor-btn" data-sensor="s15">S15 – Bleed enthalpy</button>
+        <button class="sensor-btn" data-sensor="s17">S17 – HPT coolant bleed</button>
+      </div>
+      <div class="chart-container sensor-chart-container">
+        <canvas id="sensorTrendChart"></canvas>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ROW 4: AI AGENT PANEL ========== -->
+  <section class="row agent-row">
+    <div class="card full-width-card agent-card">
+      <div class="card-header">
+        <h2>🤖 AI Agent Analysis</h2>
+        <div class="agent-header-actions">
+          <span class="agent-thinking-indicator" id="agentThinking" style="display:none;">
+            <span class="thinking-dot"></span><span class="thinking-dot"></span><span class="thinking-dot"></span>
+            Analyzing…
+          </span>
+          <button class="btn btn-primary" id="btnAnalyze">
+            <i class="fa-solid fa-robot"></i> Analyze Engine
+          </button>
+        </div>
+      </div>
+
+      <div class="agent-grid">
+
+        <div class="agent-section">
+          <h3 class="agent-section-title"><i class="fa-solid fa-magnifying-glass-chart"></i> Identified Problem</h3>
+          <div class="agent-problem-box" id="agentProblem">
+            <p class="placeholder-text">Run analysis to identify engine problems.</p>
+          </div>
+        </div>
+
+        <div class="agent-section">
+          <h3 class="agent-section-title"><i class="fa-solid fa-list-check"></i> Degradation Indicators</h3>
+          <ul class="degradation-list" id="degradationIndicators">
+            <li class="placeholder-text">No data — run analysis.</li>
+          </ul>
+        </div>
+
+        <div class="agent-section agent-section-full">
+          <h3 class="agent-section-title"><i class="fa-solid fa-brain"></i> AI Explanation</h3>
+          <div class="agent-explanation-box" id="agentExplanation">
+            <p class="placeholder-text">AI explanation will appear here after analysis.</p>
+          </div>
+        </div>
+
+        <div class="agent-section agent-section-full">
+          <h3 class="agent-section-title"><i class="fa-solid fa-list-ol"></i> Reasoning Steps</h3>
+          <ol class="reasoning-steps" id="reasoningSteps">
+            <li class="placeholder-text">Reasoning steps will appear here after analysis.</li>
+          </ol>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ROW 5: INTERVENTION CANDIDATES TABLE ========== -->
+  <section class="row intervention-row">
+    <div class="card full-width-card">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-wrench"></i> Candidate Interventions — Virtual Simulation Results</h2>
+      </div>
+
+      <div class="disclaimer-box">
+        <i class="fa-solid fa-circle-exclamation"></i>
+        <strong>Note:</strong> RUL estimates are generated by a virtual simulation model. Values represent assumptions — not experimentally validated hardware effects.
+      </div>
+
+      <div class="table-scroll">
+        <table class="data-table intervention-table" id="interventionTable">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Action</th>
+              <th>Predicted RUL</th>
+              <th>RUL Gain</th>
+              <th>Risk</th>
+              <th>Cost</th>
+              <th>Score</th>
+              <th>Recommended</th>
+            </tr>
+          </thead>
+          <tbody id="interventionTableBody">
+            <tr>
+              <td colspan="8" class="empty-row">Run analysis to populate intervention candidates.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ROW 6: WHAT-IF SIMULATION ========== -->
+  <section class="row whatif-row">
+    <div class="card full-width-card">
+      <div class="card-header">
+        <h2>🔬 What-If Simulation</h2>
+        <div class="whatif-controls">
+          <select id="whatIfSelect" class="select-input">
+            <option value="">— Select intervention —</option>
+          </select>
+          <button class="btn btn-accent" id="btnWhatIf">
+            <i class="fa-solid fa-play"></i> Run Simulation
+          </button>
+        </div>
+      </div>
+
+      <div class="whatif-layout">
+
+        <div class="whatif-chart-panel">
+          <div class="comparison-header">
+            <span class="legend-item baseline"><span class="legend-line dashed"></span> Baseline (No Action)</span>
+            <span class="legend-item intervention"><span class="legend-line solid"></span> After Intervention</span>
+          </div>
+          <div class="chart-container comparison-container">
+            <canvas id="comparisonChart"></canvas>
+          </div>
+        </div>
+
+        <div class="whatif-summary-panel">
+          <h3 class="panel-subtitle">Simulation Summary</h3>
+          <div class="sim-cards">
+            <div class="sim-card">
+              <p class="sim-card-label">Current RUL</p>
+              <p class="sim-card-value" id="simCurrentRUL">—</p>
+              <p class="sim-card-unit">cycles</p>
+            </div>
+            <div class="sim-card highlight">
+              <p class="sim-card-label">RUL After Intervention</p>
+              <p class="sim-card-value" id="simPredictedRUL">—</p>
+              <p class="sim-card-unit">cycles</p>
+            </div>
+            <div class="sim-card gain-card">
+              <p class="sim-card-label">RUL Gain</p>
+              <p class="sim-card-value gain-value" id="simRULGain">—</p>
+              <p class="sim-card-unit">cycles</p>
+            </div>
+            <div class="sim-card">
+              <p class="sim-card-label">Improvement</p>
+              <p class="sim-card-value" id="simImprovement">—</p>
+              <p class="sim-card-unit">percent</p>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ROW 7: ENGINEER APPROVAL PANEL ========== -->
+  <section class="row approval-row">
+    <div class="card full-width-card approval-card">
+      <div class="card-header">
+        <h2>✅ Engineer Approval</h2>
+        <span class="approval-status-badge" id="approvalStatusBadge"></span>
+      </div>
+
+      <div class="approval-layout">
+
+        <div class="approval-recommendation">
+          <h3 class="panel-subtitle">Current AI Recommendation</h3>
+          <div class="recommendation-box" id="recommendationBox">
+            <div class="rec-name" id="recName">No recommendation yet — run AI analysis first.</div>
+            <div class="rec-explanation" id="recExplanation"></div>
+            <div class="rec-score-row">
+              <span class="rec-score-label">Recommendation Score:</span>
+              <span class="rec-score-value" id="recScore">—</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="approval-actions">
+          <h3 class="panel-subtitle">Engineer Decision</h3>
+          <div class="notes-wrap">
+            <label for="engineerNotes">Engineer Notes</label>
+            <textarea id="engineerNotes" rows="4" placeholder="Add notes, observations, or reasons for your decision…"></textarea>
+          </div>
+          <div class="approval-buttons">
+            <button class="btn btn-approve" id="btnApprove">
+              <i class="fa-solid fa-circle-check"></i> Approve
+            </button>
+            <button class="btn btn-reject" id="btnReject">
+              <i class="fa-solid fa-circle-xmark"></i> Reject
+            </button>
+          </div>
+          <div class="safety-note">
+            <i class="fa-solid fa-shield-halved"></i>
+            The AI provides recommendations. The engineer makes the final decision.
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ROW 8: INTERVENTION HISTORY ========== -->
+  <section class="row history-row">
+    <div class="card full-width-card">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-clock-rotate-left"></i> Intervention History</h2>
+        <span class="card-badge" id="historyCount">0 records</span>
+      </div>
+      <div class="table-scroll history-scroll">
+        <table class="data-table history-table" id="historyTable">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Cycle</th>
+              <th>Action</th>
+              <th>RUL Before</th>
+              <th>RUL After (Predicted)</th>
+              <th>Status</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody id="historyTableBody">
+            <tr>
+              <td colspan="7" class="empty-row">No intervention history yet.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== ROW 9: MODEL EVALUATION ========== -->
+  <section class="row metrics-row">
+    <div class="card full-width-card">
+      <div class="card-header">
+        <h2><i class="fa-solid fa-chart-bar"></i> ML Model Performance</h2>
+        <span class="card-badge">Model Comparison</span>
+      </div>
+      <div class="table-scroll">
+        <table class="data-table metrics-table" id="metricsTable">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th>RMSE</th>
+              <th>MAE</th>
+              <th>R²</th>
+              <th>Score</th>
+              <th>Selected</th>
+            </tr>
+          </thead>
+          <tbody id="metricsTableBody">
+            <tr>
+              <td colspan="6" class="empty-row">Model metrics not yet loaded.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ===================== TOAST CONTAINER ===================== -->
+<div id="toastContainer" class="toast-container"></div>
+
+<!-- ===================== SCRIPTS ===================== -->
+<script src="js/charts.js"></script>
+<script src="js/simulation.js"></script>
+<script src="js/agent.js"></script>
+<script src="js/main.js"></script>
+
+</body>
+</html>

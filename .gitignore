@@ -34,11 +34,8 @@ ENV/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints
 
-# Large datasets (FD002-FD004)
-*FD002*
-*FD003*
-*FD004*
-*.pdf
+# NASA C-MAPSS datasets
+data/*.txt
 
 # Operating System Files
 .DS_Store

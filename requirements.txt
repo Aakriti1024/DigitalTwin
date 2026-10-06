@@ -1,0 +1,23 @@
+# ── Machine Learning ──────────────────────────────────────────────────────────
+tensorflow>=2.13.0
+scikit-learn>=1.3.0
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.11.0
+joblib>=1.3.0
+
+# ── Visualization (training plots, evaluation) ────────────────────────────────
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# ── Backend ───────────────────────────────────────────────────────────────────
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.4.0
+python-multipart>=0.0.6
+aiofiles>=23.2.1
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+python-dotenv>=1.0.0
+tqdm>=4.65.0
+requests>=2.31.0

@@ -43,7 +43,7 @@ async def what_if_simulation(request: SimulationRequest):
     try:
         result = simulate_intervention(
             current_rul=current_rul,
-            health_score=health_score / 100.0,
+            current_health_score=health_score / 100.0,
             intervention_id=request.intervention_id,
             n_future_cycles=request.n_future_cycles,
         )
@@ -95,7 +95,7 @@ async def compare_interventions(
     try:
         all_results = simulate_all_interventions(
             current_rul=current_rul,
-            health_score=health_score / 100.0,
+            current_health_score=health_score / 100.0,
             n_future_cycles=n_future_cycles,
         )
     except Exception as exc:
@@ -138,7 +138,7 @@ async def list_simulation_interventions(
     try:
         all_results = simulate_all_interventions(
             current_rul=current_rul,
-            health_score=health_score / 100.0,
+            current_health_score=health_score / 100.0,
             n_future_cycles=50,
         )
     except Exception as exc:

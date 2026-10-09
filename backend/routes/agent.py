@@ -126,7 +126,7 @@ async def approve_recommendation(request: ApprovalRequest):
     try:
         sim_result = simulate_intervention(
             current_rul=rul,
-            health_score=health_score / 100.0,
+            current_health_score=health_score / 100.0,
             intervention_id=request.intervention_id,
             n_future_cycles=50,
         )

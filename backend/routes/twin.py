@@ -5,6 +5,7 @@ Endpoints for reading and updating the per-engine digital twin state,
 accessing sensor/RUL history, resetting a twin, and listing all tracked engines.
 """
 
+from typing import Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query
 from backend.digital_twin import registry
 from backend.schemas import UpdateSensorRequest, EngineStateResponse
@@ -59,9 +60,13 @@ async def update_twin(request: UpdateSensorRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/history", summary="Get RUL and sensor history")
-async def get_twin_history(engine_id: str = Query(..., description="Engine identifier")):
+async def get_twin_history(
+    engine_id: str = Query(..., description="Engine identifier"),
+    n_cycles: Optional[int] = Query(None, description="Number of historical cycles to return"),
+):
     """
     Return the full RUL history and per-sensor value trends for the given engine.
+    Optionally limited to the last n_cycles observations.
     """
     twin = registry.get(engine_id)
     if twin is None:
@@ -69,7 +74,22 @@ async def get_twin_history(engine_id: str = Query(..., description="Engine ident
             status_code=404,
             detail=f"Engine '{engine_id}' not found. Call /api/twin/state first to initialise it.",
         )
-    return twin.get_history()
+    history: Dict[str, Any] = twin.get_history()
+
+    if n_cycles is not None and n_cycles > 0:
+        if "rul_history" in history and isinstance(history["rul_history"], list):
+            history["rul_history"] = history["rul_history"][-n_cycles:]
+
+        if "sensor_trends" in history and isinstance(history["sensor_trends"], dict):
+            history["sensor_trends"] = {
+                sensor: values[-n_cycles:] if isinstance(values, list) else values
+                for sensor, values in history["sensor_trends"].items()
+            }
+
+        if "cycles" in history and isinstance(history["cycles"], list):
+            history["cycles"] = history["cycles"][-n_cycles:]
+
+    return history
 
 
 # ---------------------------------------------------------------------------

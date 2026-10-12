@@ -100,7 +100,7 @@ def display_comparison_results():
 
 def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick=False):
     import tensorflow as tf
-    from ml.preprocess import preprocess_pipeline
+    from ml.preprocess import preprocess_pipeline, save_preprocessor
     from ml.models import (
         build_lstm,
         build_gru,
@@ -132,6 +132,7 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
     print("Step 1: Running C-MAPSS Preprocessing Pipeline...")
     t0 = time.time()
     data = preprocess_pipeline(subset=subset, data_dir=DATA_DIR)
+    save_preprocessor(data, subset=subset)
     X_train, y_train = data["X_train"], data["y_train"]
     X_val, y_val = data["X_val"], data["y_val"]
     X_test, y_test = data["X_test"], data["y_test"]
@@ -180,7 +181,7 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
 
     for name, model in models_to_train.items():
         print(f"\n---> Training: {name.upper()}")
-        checkpoint_path = os.path.join(MODELS_DIR, f"{name}_best.h5")
+        checkpoint_path = os.path.join(MODELS_DIR, f"{name}_best.keras")
 
         callbacks = [
             tf.keras.callbacks.EarlyStopping(
@@ -216,9 +217,20 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
         )
         t_elapsed = time.time() - t_start
 
-        # Evaluate on test set
-        print(f"---> Evaluating {name.upper()} on held-out test data...")
+        # Also save legacy .h5 copy if supported
+        if name != "transformer":
+            try:
+                h5_path = os.path.join(MODELS_DIR, f"{name}_best.h5")
+                model.save(h5_path)
+            except Exception:
+                pass
+
+        # Evaluate on test set & measure inference latency
+        print(f"---> Evaluating {name.upper()} on benchmark test data...")
+        t_inf_start = time.time()
         y_pred = model.predict(X_test, verbose=0).ravel()
+        inf_latency_ms = round(((time.time() - t_inf_start) * 1000.0) / max(1, len(X_test)), 2)
+
         metrics = compute_metrics(y_test, y_pred)
 
         results.append({
@@ -228,6 +240,7 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
             "r2": metrics["r2"],
             "nasa_score": metrics["nasa_score"],
             "training_time": round(t_elapsed, 2),
+            "inference_time_ms": inf_latency_ms,
         })
 
     # 4. Compare and select best

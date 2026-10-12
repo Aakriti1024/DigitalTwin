@@ -27,6 +27,7 @@ import logging
 
 import numpy as np
 import pandas as pd
+from ml.preprocess import load_single_engine
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,9 @@ class DigitalTwin:
         # ── ML model (loaded lazily) ─────────────────────────────────────────
         self.model = None
         self.scaler = None
+        self.km = None
+        self.op_scaler = None
+        self.feature_cols: List[str] = list(SELECTED_SENSORS)
         self.is_demo_mode: bool = True  # True until a real model is loaded
 
         # ── Thread safety ────────────────────────────────────────────────────
@@ -89,11 +93,25 @@ class DigitalTwin:
     # Model loading
     # ------------------------------------------------------------------
 
-    def load_model(self, model, scaler) -> None:
-        """Attach a trained ML model and scaler. Disables demo mode."""
+    def load_model(self, model, scaler, km=None, op_scaler=None) -> None:
+        """
+        Attach a trained ML model and preprocessor artifacts. Disables demo mode.
+
+        Supports either a preprocessor bundle dict (from load_preprocessor)
+        or separate scaler, km, op_scaler objects.
+        """
         with self._lock:
             self.model = model
-            self.scaler = scaler
+            if isinstance(scaler, dict) and "scaler" in scaler:
+                self.scaler = scaler["scaler"]
+                self.km = scaler.get("km", km)
+                self.op_scaler = scaler.get("op_scaler", op_scaler)
+                self.feature_cols = list(scaler.get("feature_cols", SELECTED_SENSORS))
+            else:
+                self.scaler = scaler
+                self.km = km
+                self.op_scaler = op_scaler
+                self.feature_cols = list(SELECTED_SENSORS)
             self.is_demo_mode = False
             logger.info("Model loaded for engine %s", self.engine_id)
 
@@ -153,51 +171,69 @@ class DigitalTwin:
             return self.to_dict()
 
     def _predict_from_model(self) -> None:
-        """Run the trained LSTM/ML model on the current sensor history window."""
+        """Run the trained ML model on the current sensor history window."""
         try:
             history = list(self.sensor_history)
             n = len(history)
 
-            if n < SEQUENCE_LENGTH:
-                # Not enough history yet — keep previous prediction
-                logger.debug(
-                    "Engine %s: only %d/%d cycles of history, skipping model prediction.",
-                    self.engine_id,
-                    n,
-                    SEQUENCE_LENGTH,
-                )
+            if n == 0:
                 return
 
-            # Build feature DataFrame from the last SEQUENCE_LENGTH entries
-            window = history[-SEQUENCE_LENGTH:]
+            # Build feature DataFrame from the recent history entries
+            window = history[-SEQUENCE_LENGTH:] if n >= SEQUENCE_LENGTH else history
             rows = []
             for entry in window:
                 row = {}
-                for s in SELECTED_SENSORS:
-                    row[s] = entry["sensors"].get(s, 0.0)
-                for k, v in entry.get("op_settings", {}).items():
-                    row[k] = v
+                sensors = entry.get("sensors", {})
+                for s in self.feature_cols:
+                    row[s] = float(sensors.get(s, 0.0))
+                # Operational settings for clustering (if multi-condition)
+                op = entry.get("op_settings", {})
+                row["op_set1"] = float(op.get("op_set1", op.get("setting_1", op.get("setting1", 0.0))))
+                row["op_set2"] = float(op.get("op_set2", op.get("setting_2", op.get("setting2", 0.0))))
+                row["op_set3"] = float(op.get("op_set3", op.get("setting_3", op.get("setting3", 0.0))))
+                row["cycle"] = entry.get("cycle", 1)
                 rows.append(row)
 
             df = pd.DataFrame(rows)
 
-            # Scale
-            X = self.scaler.transform(df.values)
-            X = X.reshape(1, SEQUENCE_LENGTH, X.shape[1])
+            preprocessor = {
+                "scaler": self.scaler,
+                "km": self.km,
+                "op_scaler": self.op_scaler,
+                "feature_cols": self.feature_cols,
+            }
+            # Preprocess window into model input shape (1, SEQUENCE_LENGTH, 14)
+            X = load_single_engine(
+                engine_df=df,
+                scaler=preprocessor,
+                seq_len=SEQUENCE_LENGTH,
+                feature_cols=self.feature_cols,
+            )
 
-            # Predict — model output is expected to be [rul] or [rul, uncertainty]
-            pred = self.model.predict(X, verbose=0)
-            if hasattr(pred, "__len__") and len(pred[0]) >= 2:
-                rul_pred = float(pred[0][0])
-                unc = float(pred[0][1])
-            else:
-                rul_pred = float(np.squeeze(pred))
-                unc = rul_pred * 0.1  # fallback 10 % uncertainty
+            # Predict RUL with uncertainty
+            try:
+                from ml.predict import predict_rul
+                pred_res = predict_rul(self.model, X)
+                rul_pred = float(pred_res["predicted_rul"])
+                unc = float(pred_res["uncertainty"])
+                rul_lower = float(pred_res["rul_lower"])
+                rul_upper = float(pred_res["rul_upper"])
+            except Exception:
+                pred = self.model.predict(X, verbose=0)
+                if hasattr(pred, "__len__") and len(pred[0]) >= 2:
+                    rul_pred = float(pred[0][0])
+                    unc = float(pred[0][1])
+                else:
+                    rul_pred = float(np.squeeze(pred))
+                    unc = max(1.0, rul_pred * 0.1)
+                rul_lower = max(0.0, rul_pred - unc)
+                rul_upper = rul_pred + unc
 
             self.predicted_rul = max(0.0, rul_pred)
-            self.uncertainty = max(1.0, unc)
-            self.rul_lower = max(0.0, self.predicted_rul - self.uncertainty)
-            self.rul_upper = self.predicted_rul + self.uncertainty
+            self.uncertainty = max(0.0, unc)
+            self.rul_lower = max(0.0, rul_lower)
+            self.rul_upper = max(0.0, rul_upper)
 
         except Exception as exc:
             logger.warning("Model prediction failed for engine %s: %s", self.engine_id, exc)
@@ -421,9 +457,14 @@ class DigitalTwin:
     # History retrieval
     # ------------------------------------------------------------------
 
-    def get_history(self) -> Dict[str, Any]:
+    def get_history(self, n_cycles: int = 50) -> Dict[str, Any]:
         """
         Return RUL history and per-sensor trend data.
+
+        Parameters
+        ----------
+        n_cycles : int
+            Maximum number of recent cycles to return. Defaults to 50.
 
         Returns
         -------
@@ -432,12 +473,14 @@ class DigitalTwin:
             'sensor_trends': dict of sensor_name → list of {cycle, value} dicts
         """
         with self._lock:
+            recent_rul = list(self.rul_history)[-n_cycles:]
             rul_records = [
-                {"cycle": c, "rul": round(r, 2)} for c, r in self.rul_history
+                {"cycle": c, "rul": round(r, 2)} for c, r in recent_rul
             ]
 
+            recent_sensors = list(self.sensor_history)[-n_cycles:]
             sensor_trends: Dict[str, List[Dict[str, Any]]] = {}
-            for entry in self.sensor_history:
+            for entry in recent_sensors:
                 cycle = entry["cycle"]
                 for sensor_name, value in entry.get("sensors", {}).items():
                     if sensor_name not in sensor_trends:

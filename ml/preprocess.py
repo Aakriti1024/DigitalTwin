@@ -13,6 +13,7 @@ import pandas as pd
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.cluster import KMeans
 from sklearn.model_selection import train_test_split
+import joblib
 
 from config import (
     RAW_COLUMNS,
@@ -25,6 +26,7 @@ from config import (
     VALIDATION_SIZE,
     RANDOM_STATE,
     DATA_DIR,
+    MODELS_DIR,
 )
 
 
@@ -154,6 +156,8 @@ def _normalize_by_cluster(
     scalers = {}
     train_df = train_df.copy()
     test_df = test_df.copy()
+    train_df[feature_cols] = train_df[feature_cols].astype(np.float32)
+    test_df[feature_cols] = test_df[feature_cols].astype(np.float32)
 
     for cluster in train_df["op_cluster"].unique():
         mask_train = train_df["op_cluster"] == cluster
@@ -177,28 +181,28 @@ def _normalize_by_cluster(
 # ---------------------------------------------------------------------------
 
 def cluster_operating_conditions(
-    df: pd.DataFrame,
+    train_df: pd.DataFrame,
+    test_df: pd.DataFrame = None,
     n_clusters: int = N_OPERATING_CLUSTERS,
-) -> pd.DataFrame:
+):
     """
-    Cluster rows by (op_set1, op_set2, op_set3) using KMeans and append an
-    'op_cluster' integer column.  Only needed for multi-condition subsets
-    FD002 and FD004.
-
-    Parameters
-    ----------
-    df : pd.DataFrame  — must contain op_set1, op_set2, op_set3 columns
-    n_clusters : int
-
-    Returns
-    -------
-    df with 'op_cluster' column added (in-place copy).
+    Cluster rows by (op_set1, op_set2, op_set3) using KMeans on normalized settings.
+    Fits strictly on train_df and applies cluster labels to test_df if provided.
     """
-    df = df.copy()
+    train_df = train_df.copy()
     op_cols = ["op_set1", "op_set2", "op_set3"]
-    km = KMeans(n_clusters=n_clusters, random_state=RANDOM_STATE, n_init=10)
-    df["op_cluster"] = km.fit_predict(df[op_cols])
-    return df
+    op_scaler = MinMaxScaler()
+    train_op_scaled = op_scaler.fit_transform(train_df[op_cols])
+    km = KMeans(n_clusters=n_clusters,random_state=RANDOM_STATE,n_init=10, init="random")
+    train_df["op_cluster"] = km.fit_predict(train_op_scaled)
+
+    if test_df is not None:
+        test_df = test_df.copy()
+        test_op_scaled = op_scaler.transform(test_df[op_cols])
+        test_df["op_cluster"] = km.predict(test_op_scaled)
+        return train_df, test_df, km, op_scaler
+
+    return train_df, km, op_scaler
 
 
 # ---------------------------------------------------------------------------
@@ -257,6 +261,53 @@ def make_sequences(
     return X, y
 
 
+def make_test_sequences(
+    df: pd.DataFrame,
+    rul_series: pd.Series,
+    seq_len: int = SEQUENCE_LENGTH,
+    feature_cols=None,
+    max_rul: int = MAX_RUL,
+):
+    """
+    Build standard NASA C-MAPSS benchmark test sequences.
+
+    For each test engine, takes the final `seq_len` cycles leading up to the
+    cutoff cycle, with true RUL from `rul_series` (piecewise capped at `max_rul`).
+
+    Returns
+    -------
+    X : np.ndarray, shape (n_engines, seq_len, n_features)
+    y : np.ndarray, shape (n_engines,)
+    engine_ids : list
+    """
+    if feature_cols is None:
+        feature_cols = SELECTED_SENSORS
+
+    X_list, y_list, engine_ids = [], [], []
+
+    for engine_id, group in df.groupby("engine_id"):
+        group = group.sort_values("cycle")
+        features = group[feature_cols].values
+        n_cycles = len(features)
+
+        if n_cycles < seq_len:
+            pad = np.repeat(features[:1], seq_len - n_cycles, axis=0)
+            features = np.vstack([pad, features])
+
+        window = features[-seq_len:]
+        true_rul = float(rul_series.loc[engine_id])
+        if max_rul is not None:
+            true_rul = min(true_rul, float(max_rul))
+
+        X_list.append(window)
+        y_list.append(true_rul)
+        engine_ids.append(engine_id)
+
+    X = np.array(X_list, dtype=np.float32)
+    y = np.array(y_list, dtype=np.float32)
+    return X, y, engine_ids
+
+
 # ---------------------------------------------------------------------------
 # Full end-to-end pipeline
 # ---------------------------------------------------------------------------
@@ -264,18 +315,18 @@ def make_sequences(
 def preprocess_pipeline(subset: str = "FD001", data_dir: str = None) -> dict:
     """
     Execute the complete preprocessing pipeline and return arrays ready for
-    model training.
+    model training and standard benchmark evaluation without data leakage.
 
     Steps
     -----
     1. Load raw txt files.
     2. Remove constant sensors.
     3. Compute train RUL (max_cycle − current_cycle), clip at MAX_RUL.
-    4. Cluster operating conditions for multi-condition subsets.
-    5. Normalize sensors (per-cluster for FD002/FD004, global otherwise).
-    6. Build test ground-truth RUL from RUL file.
-    7. Make sliding-window sequences.
-    8. Split train into train / val.
+    4. Split train engines into train and val engines (zero sequence leakage).
+    5. Cluster operating conditions on train and project onto val and test.
+    6. Normalize sensors (fit strictly on train split).
+    7. Generate sliding sequences for train and val.
+    8. Generate standard benchmark test sequences (last window of each engine).
 
     Parameters
     ----------
@@ -286,6 +337,7 @@ def preprocess_pipeline(subset: str = "FD001", data_dir: str = None) -> dict:
     -------
     dict with keys:
         X_train, y_train, X_val, y_val, X_test, y_test,
+        X_test_all, y_test_all, test_engine_ids,
         scaler, feature_cols, subset
     """
     # 1. Load
@@ -304,50 +356,77 @@ def preprocess_pipeline(subset: str = "FD001", data_dir: str = None) -> dict:
     )
     train_df = clip_rul(train_df, MAX_RUL)
 
-    # 4. Operating-condition clustering (multi-condition subsets)
+    # 4. Engine-level Train / Val split to prevent temporal leakage
+    unique_engines = train_df["engine_id"].unique()
+    train_engs, val_engs = train_test_split(
+        unique_engines,
+        test_size=VALIDATION_SIZE,
+        random_state=RANDOM_STATE,
+    )
+    train_split_df = train_df[train_df["engine_id"].isin(train_engs)].copy()
+    val_split_df = train_df[train_df["engine_id"].isin(val_engs)].copy()
+
+   
+    # 5. Operating-condition clustering (multi-condition subsets)
     multi_condition = subset in ("FD002", "FD004")
-    if multi_condition:
-        train_df = cluster_operating_conditions(train_df, N_OPERATING_CLUSTERS)
-        test_df = cluster_operating_conditions(test_df, N_OPERATING_CLUSTERS)
 
-    # 5. Normalize
     if multi_condition:
-        train_df, test_df, scaler = _normalize_by_cluster(
-            train_df, test_df, feature_cols
+        train_split_df, test_df, km, op_scaler = cluster_operating_conditions(
+            train_split_df, test_df, N_OPERATING_CLUSTERS
         )
+
+        op_cols = ["op_set1", "op_set2", "op_set3"]
+
+        # Use the same scaling used to fit K-Means.
+        val_op_scaled = op_scaler.transform(val_split_df[op_cols])
+        val_split_df["op_cluster"] = km.predict(val_op_scaled)
+
+        train_op_scaled = op_scaler.transform(train_df[op_cols])
+        train_df["op_cluster"] = km.predict(train_op_scaled)
+
+        # Allow scaled sensor values to be stored as floats.
+        test_df[feature_cols] = test_df[feature_cols].astype(np.float32)
+
+
+    # 6. Normalize sensors (fit strictly on train split)
+    if multi_condition:
+        train_split_df, val_split_df, scaler = _normalize_by_cluster(
+            train_split_df, val_split_df, feature_cols
+        )
+        # Apply cluster scalers to test_df
+        for cluster_id, sc in scaler.items():
+            mask = test_df["op_cluster"] == cluster_id
+            if mask.any():
+                test_df.loc[mask, feature_cols] = sc.transform(test_df.loc[mask, feature_cols])
     else:
-        train_df, test_df, scaler = normalize_sensors(
-            train_df, test_df, feature_cols
-        )
+        scaler = MinMaxScaler()
+        train_split_df[feature_cols] = scaler.fit_transform(train_split_df[feature_cols])
+        val_split_df[feature_cols] = scaler.transform(val_split_df[feature_cols])
+        test_df[feature_cols] = scaler.transform(test_df[feature_cols])
 
-    # 6. Build test RUL column (ground truth = RUL at last cycle + cycles
-    #    remaining, but here the RUL file gives remaining life at last cycle)
+    # 7. Build test ground-truth for all cycles (for trajectory simulation)
     last_cycles = test_df.groupby("engine_id")["cycle"].max().reset_index()
     last_cycles.columns = ["engine_id", "last_cycle"]
-    test_df = test_df.merge(last_cycles, on="engine_id")
+    test_df_all = test_df.merge(last_cycles, on="engine_id")
 
     def _test_rul(row):
         rul_at_last = rul_series.loc[row["engine_id"]]
-        # RUL at current cycle = rul_at_last + (last_cycle − current_cycle)
         return rul_at_last + (row["last_cycle"] - row["cycle"])
 
-    test_df["RUL"] = test_df.apply(_test_rul, axis=1)
-    test_df["RUL"] = test_df["RUL"].clip(upper=MAX_RUL)
-    test_df = test_df.drop(columns=["last_cycle"])
+    test_df_all["RUL"] = test_df_all.apply(_test_rul, axis=1).clip(upper=MAX_RUL)
+    test_df_all = test_df_all.drop(columns=["last_cycle"])
 
-    # 7. Make sequences
-    X_all, y_all = make_sequences(train_df, SEQUENCE_LENGTH, feature_cols)
-    X_test, y_test = make_sequences(test_df, SEQUENCE_LENGTH, feature_cols)
+    # 8. Sequences
+    X_train, y_train = make_sequences(train_split_df, SEQUENCE_LENGTH, feature_cols)
+    X_val, y_val = make_sequences(val_split_df, SEQUENCE_LENGTH, feature_cols)
 
-    # 8. Split train → train / val
-    # First split off test fraction, then split remainder into train/val
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_all,
-        y_all,
-        test_size=VALIDATION_SIZE,
-        random_state=RANDOM_STATE,
-        shuffle=True,
+    # Standard C-MAPSS benchmark test set (last sequence of each engine)
+    X_test, y_test, test_engine_ids = make_test_sequences(
+        test_df, rul_series, SEQUENCE_LENGTH, feature_cols, MAX_RUL
     )
+
+    # All-cycles test sequences (for trajectory replay)
+    X_test_all, y_test_all = make_sequences(test_df_all, SEQUENCE_LENGTH, feature_cols)
 
     return {
         "X_train": X_train,
@@ -356,10 +435,105 @@ def preprocess_pipeline(subset: str = "FD001", data_dir: str = None) -> dict:
         "y_val": y_val,
         "X_test": X_test,
         "y_test": y_test,
+        "X_test_all": X_test_all,
+        "y_test_all": y_test_all,
+        "test_engine_ids": test_engine_ids,
         "scaler": scaler,
+        "km": km if multi_condition else None,
+        "op_scaler": op_scaler if multi_condition else None,
         "feature_cols": feature_cols,
         "subset": subset,
     }
+
+
+# ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Preprocessing Artifact Persistence (Save / Load)
+# ---------------------------------------------------------------------------
+
+def save_preprocessor(
+    preprocessor: dict,
+    subset: str = "FD001",
+    save_dir: str = None,
+) -> str:
+    """
+    Save fitted preprocessing artifacts to disk using joblib.
+
+    For FD001/FD003: preserves the single MinMaxScaler.
+    For FD002/FD004: preserves the fitted KMeans model, operational settings
+    MinMaxScaler, and cluster-specific sensor MinMaxScaler dictionary.
+
+    Parameters
+    ----------
+    preprocessor : dict
+        Dictionary containing 'scaler'. For multi-condition subsets, also
+        contains 'km' and 'op_scaler'.
+    subset : str
+        C-MAPSS subset identifier ('FD001', 'FD002', 'FD003', 'FD004').
+    save_dir : str or None
+        Destination directory. Defaults to config.MODELS_DIR.
+
+    Returns
+    -------
+    save_path : str
+        Path to the saved joblib file.
+    """
+    if save_dir is None:
+        save_dir = MODELS_DIR
+    os.makedirs(save_dir, exist_ok=True)
+
+    multi_condition = subset in ("FD002", "FD004")
+    feature_cols = preprocessor.get("feature_cols", SELECTED_SENSORS)
+
+    artifact = {
+        "subset": subset,
+        "feature_cols": list(feature_cols),
+        "scaler": preprocessor["scaler"],
+        "km": preprocessor.get("km"),
+        "op_scaler": preprocessor.get("op_scaler"),
+        "multi_condition": multi_condition,
+    }
+
+    save_path = os.path.join(save_dir, f"preprocessor_{subset}.joblib")
+    joblib.dump(artifact, save_path)
+    return save_path
+
+
+def load_preprocessor(
+    subset: str = "FD001",
+    save_dir: str = None,
+) -> dict:
+    """
+    Load fitted preprocessing artifacts from disk.
+
+    Parameters
+    ----------
+    subset : str
+        C-MAPSS subset identifier ('FD001', 'FD002', 'FD003', 'FD004').
+    save_dir : str or None
+        Directory where artifacts are stored. Defaults to config.MODELS_DIR.
+
+    Returns
+    -------
+    preprocessor : dict
+        Dictionary with keys:
+            'subset', 'feature_cols', 'scaler', 'km', 'op_scaler', 'multi_condition'
+    """
+    if save_dir is None:
+        save_dir = MODELS_DIR
+
+    save_path = os.path.join(save_dir, f"preprocessor_{subset}.joblib")
+    if not os.path.exists(save_path):
+        fallback_path = os.path.join(save_dir, f"scaler_{subset}.joblib")
+        if os.path.exists(fallback_path):
+            save_path = fallback_path
+        else:
+            raise FileNotFoundError(
+                f"Preprocessor artifact for subset '{subset}' not found at '{save_path}'."
+            )
+
+    artifact = joblib.load(save_path)
+    return artifact
 
 
 # ---------------------------------------------------------------------------
@@ -371,54 +545,100 @@ def load_single_engine(
     scaler,
     seq_len: int = SEQUENCE_LENGTH,
     feature_cols=None,
+    km=None,
+    op_scaler=None,
 ) -> np.ndarray:
     """
-    Prepare a single engine's sensor data for real-time inference.
+    Prepare a single engine's sensor data for real-time inference without data leakage.
 
-    Takes the most recent `seq_len` cycles, normalizes them using the
-    pre-fitted scaler, and returns a batched array ready for model.predict().
+    Strictly preserves:
+    - Exactly 14 sensor features in identical order (SELECTED_SENSORS)
+    - Sliding sequence length of seq_len (defaults to 30)
+    - Shape (1, seq_len, 14)
+    - Does NOT pass operational settings into the model as extra sensor features
+    - Reuses the fitted training scaler(s) and KMeans model (no refitting on live data)
 
     Parameters
     ----------
     engine_df : pd.DataFrame
         Rows for ONE engine, sorted ascending by cycle.
-        Must contain all columns in feature_cols.
-    scaler : fitted MinMaxScaler (or dict of scalers for multi-condition)
+    scaler : fitted MinMaxScaler, dict of cluster scalers, or preprocessor dict
     seq_len : int
     feature_cols : list[str] or None
+    km : fitted KMeans or None
+    op_scaler : fitted MinMaxScaler for operational settings or None
 
     Returns
     -------
-    X : np.ndarray, shape (1, seq_len, n_features)
+    X : np.ndarray, shape (1, seq_len, 14)
     """
+    # Unpack preprocessor bundle if provided
+    if isinstance(scaler, dict) and "scaler" in scaler:
+        km = km or scaler.get("km")
+        op_scaler = op_scaler or scaler.get("op_scaler")
+        feature_cols = feature_cols or scaler.get("feature_cols")
+        scaler = scaler["scaler"]
+
     if feature_cols is None:
         feature_cols = SELECTED_SENSORS
 
-    engine_df = engine_df.sort_values("cycle").copy()
+    engine_df = engine_df.copy()
+    if "cycle" in engine_df.columns:
+        engine_df = engine_df.sort_values("cycle")
 
-    # Normalize — handle both a single scaler and a cluster-dict of scalers
+    # Multi-condition subsets (cluster-specific normalization)
     if isinstance(scaler, dict):
-        # Multi-condition: apply per-cluster scaler
+        # Determine operating cluster if not already present
+        if "op_cluster" not in engine_df.columns:
+            op_cols = ["op_set1", "op_set2", "op_set3"]
+            for i, col in enumerate(op_cols, start=1):
+                if col not in engine_df.columns:
+                    for alt in [f"setting_{i}", f"setting{i}", f"op_{i}"]:
+                        if alt in engine_df.columns:
+                            engine_df[col] = engine_df[alt]
+                            break
+                    if col not in engine_df.columns:
+                        engine_df[col] = 0.0
+
+            if op_scaler is not None and km is not None:
+                op_scaled = op_scaler.transform(engine_df[op_cols])
+                engine_df["op_cluster"] = km.predict(op_scaled)
+            else:
+                first_cluster = list(scaler.keys())[0]
+                engine_df["op_cluster"] = first_cluster
+
+        # Ensure sensor columns exist
+        for col in feature_cols:
+            if col not in engine_df.columns:
+                engine_df[col] = 0.0
+
+        engine_df[feature_cols] = engine_df[feature_cols].astype(np.float32)
+
         for cluster_id, sc in scaler.items():
             mask = engine_df["op_cluster"] == cluster_id
             if mask.any():
                 engine_df.loc[mask, feature_cols] = sc.transform(
                     engine_df.loc[mask, feature_cols]
                 )
-    else:
+    elif scaler is not None:
+        # Single-condition subsets (FD001 / FD003)
+        for col in feature_cols:
+            if col not in engine_df.columns:
+                engine_df[col] = 0.0
+        engine_df[feature_cols] = engine_df[feature_cols].astype(np.float32)
         engine_df[feature_cols] = scaler.transform(engine_df[feature_cols])
 
-    features = engine_df[feature_cols].values  # (T, F)
+    # Extract strictly the 14 sensor features
+    features = engine_df[feature_cols].values
     T = len(features)
 
     if T >= seq_len:
-        # Take the most recent window
         window = features[-seq_len:]
     else:
-        # Pad from the left with the first available reading
         pad_size = seq_len - T
         pad = np.repeat(features[:1], pad_size, axis=0)
         window = np.vstack([pad, features])
 
-    X = window[np.newaxis, :, :].astype(np.float32)  # (1, seq_len, F)
+    X = window[np.newaxis, :, :].astype(np.float32)
+    X = np.nan_to_num(X, nan=0.0, posinf=1.0, neginf=0.0)
     return X

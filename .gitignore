@@ -56,3 +56,8 @@ desktop.ini
 *.synctex.gz
 *.fls
 *.fdb_latexmk
+
+# Runtime Caches
+.cache/
+.keras/
+.matplotlib/

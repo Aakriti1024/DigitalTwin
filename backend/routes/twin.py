@@ -59,17 +59,17 @@ async def update_twin(request: UpdateSensorRequest):
 # ---------------------------------------------------------------------------
 
 @router.get("/history", summary="Get RUL and sensor history")
-async def get_twin_history(engine_id: str = Query(..., description="Engine identifier")):
+async def get_twin_history(
+    engine_id: str = Query(..., description="Engine identifier"),
+    n_cycles: int = Query(default=50, ge=1, le=500, description="Max cycles of history to return"),
+):
     """
     Return the full RUL history and per-sensor value trends for the given engine.
     """
     twin = registry.get(engine_id)
     if twin is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Engine '{engine_id}' not found. Call /api/twin/state first to initialise it.",
-        )
-    return twin.get_history()
+        twin = registry.get_or_create(engine_id)
+    return twin.get_history(n_cycles=n_cycles)
 
 
 # ---------------------------------------------------------------------------

@@ -7,13 +7,14 @@
 
 /* ------------------------------------------------------------------ */
 /*  Global state                                                        */
-/* ------------------------------------------------------------------ */
-const API_BASE = 'http://localhost:8000/api';
-let currentEngineId    = 'E1';
-let pollingInterval    = null;
-let currentTwinState   = null;
-let currentAnalysis    = null;
-let currentSimResult   = null;
+const API_BASE = (typeof window !== 'undefined' && window.location && window.location.origin && window.location.origin !== 'null')
+  ? `${window.location.origin}/api`
+  : 'http://localhost:8000/api';
+let pollingInterval = null;
+let currentTwinState = null;
+let currentAnalysis = null;
+let currentSimResult = null;
+let currentEngineId = 'E1';
 
 /* ------------------------------------------------------------------ */
 /*  Initialization                                                      */
@@ -41,8 +42,8 @@ function init() {
   }
 
   // --- Initialize charts and simulation modules ---
-  if (typeof initCharts === 'function')      initCharts();
-  if (typeof initSimulation === 'function')  initSimulation();
+  if (typeof initCharts === 'function') initCharts();
+  if (typeof initSimulation === 'function') initSimulation();
 
   // --- Button: Analyze ---
   const btnAnalyze = document.getElementById('btnAnalyze');
@@ -177,7 +178,7 @@ function updateTopStats(state) {
   const healthBadge = document.getElementById('healthStateBadge');
   if (healthBadge) {
     healthBadge.textContent = healthInfo.text;
-    healthBadge.className   = `health-badge ${healthInfo.className}`;
+    healthBadge.className = `health-badge ${healthInfo.className}`;
   }
 
   // Status message
@@ -206,11 +207,11 @@ function updateTopStats(state) {
   }
 
   // Risk badge
-  const riskInfo  = formatRisk(state.risk_level || 'unknown');
+  const riskInfo = formatRisk(state.risk_level || 'unknown');
   const riskBadge = document.getElementById('riskBadge');
   if (riskBadge) {
     riskBadge.textContent = riskInfo.text;
-    riskBadge.className   = `risk-badge ${riskInfo.className}`;
+    riskBadge.className = `risk-badge ${riskInfo.className}`;
   }
   const riskSub = document.getElementById('riskSubtext');
   if (riskSub) riskSub.textContent = riskInfo.subtext || '';
@@ -320,18 +321,26 @@ function updateMetricsTable(metrics) {
     return;
   }
 
-  tbody.innerHTML = metrics.map(m => `
+  tbody.innerHTML = metrics.map(m => {
+    const name = m.model_name || m.model || '—';
+    const rmse = m.rmse != null ? Number(m.rmse).toFixed(2) : '—';
+    const mae = m.mae != null ? Number(m.mae).toFixed(2) : '—';
+    const r2 = m.r2 != null ? Number(m.r2).toFixed(4) : '—';
+    const scoreVal = m.score != null ? m.score : (m.composite_score != null ? m.composite_score : null);
+    const score = scoreVal != null ? Number(scoreVal).toFixed(3) : '—';
+    const isSelected = m.selected === true || m.is_best === true;
+    return `
     <tr>
-      <td><strong>${escapeHtml(m.model_name || '—')}</strong></td>
-      <td>${m.rmse != null ? m.rmse.toFixed(3) : '—'}</td>
-      <td>${m.mae  != null ? m.mae.toFixed(3)  : '—'}</td>
-      <td>${m.r2   != null ? m.r2.toFixed(4)   : '—'}</td>
-      <td>${m.score != null ? m.score.toFixed(3) : '—'}</td>
-      <td>${m.selected
+      <td><strong>${escapeHtml(name.toUpperCase())}</strong></td>
+      <td>${rmse}</td>
+      <td>${mae}</td>
+      <td>${r2}</td>
+      <td>${score}</td>
+      <td>${isSelected
         ? '<span class="selected-model"><i class="fa-solid fa-check-circle"></i> Selected</span>'
         : '—'}</td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
 }
 
 /* ------------------------------------------------------------------ */
@@ -345,40 +354,114 @@ async function handleAnalyze() {
   const btn = document.getElementById('btnAnalyze');
   const thinking = document.getElementById('agentThinking');
 
-  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Analyzing…'; }
-  if (thinking) thinking.style.display = 'flex';
+  console.log('[Digital Twin] Analyze Engine clicked');
+  console.log('[Digital Twin] Engine:', currentEngineId);
+  console.log('[Digital Twin] API:', API_BASE);
+
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Analyzing...';
+  }
+
+  if (thinking) {
+    thinking.style.display = 'inline-flex';
+  }
 
   try {
-    const url = `${API_BASE}/agent/analyze?engine_id=${encodeURIComponent(currentEngineId)}`;
-    const response = await fetch(url);
+    // ---------------------------------------------------------
+    // 1. Get current Digital Twin state
+    // ---------------------------------------------------------
+    console.log('[Digital Twin] Getting twin state...');
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const stateResponse = await fetch(
+      `${API_BASE}/twin/state?engine_id=${encodeURIComponent(currentEngineId)}`
+    );
 
-    const data = await response.json();
-    currentAnalysis = data;
-
-    // Update agent panel (agent.js)
-    if (typeof updateAgentPanel === 'function')    updateAgentPanel(data);
-    if (typeof updateApprovalPanel === 'function') updateApprovalPanel(data, currentTwinState);
-
-    // Update intervention table
-    updateInterventionTable(data.interventions ? data : { interventions: data.interventions || [] });
-
-    // Populate what-if select
-    if (typeof populateInterventionSelect === 'function') {
-      populateInterventionSelect(data.interventions || []);
+    if (!stateResponse.ok) {
+      throw new Error(
+        `Twin API failed: ${stateResponse.status} ${stateResponse.statusText}`
+      );
     }
 
+    const twinState = await stateResponse.json();
+
+    console.log('[Digital Twin] Twin state:', twinState);
+
+    // ---------------------------------------------------------
+    // 2. Run AI Agent analysis
+    // ---------------------------------------------------------
+    console.log('[Digital Twin] Running AI agent analysis...');
+
+    const analysisResponse = await fetch(
+      `${API_BASE}/agent/analyze?engine_id=${encodeURIComponent(currentEngineId)}`
+    );
+
+    if (!analysisResponse.ok) {
+      const errorText = await analysisResponse.text();
+
+      throw new Error(
+        `Agent API failed: ${analysisResponse.status} ${errorText}`
+      );
+    }
+
+    const analysis = await analysisResponse.json();
+
+    console.log('[Digital Twin] Analysis:', analysis);
+
+    // Save globally so Approve button can use it
+    currentAnalysis = analysis;
+
+    // ---------------------------------------------------------
+    // 3. Update RUL / health / risk section
+    // ---------------------------------------------------------
+    updateAllUI(twinState);
+
+    // ---------------------------------------------------------
+    // 4. Update AI Agent section
+    // ---------------------------------------------------------
+    updateAgentPanel(analysis);
+
+    // ---------------------------------------------------------
+    // 5. Populate What-if Simulation
+    // ---------------------------------------------------------
+    if (typeof populateInterventionSelect === 'function') {
+      populateInterventionSelect(
+        analysis.interventions || []
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 6. Show success message
+    // ---------------------------------------------------------
     showToast('AI analysis complete.', 'success');
+
+    console.log('[Digital Twin] Analysis completed successfully.');
+
   } catch (err) {
-    console.error('[Digital Twin] handleAnalyze error:', err);
-    showToast(`Analysis failed: ${err.message}`, 'error');
+
+    console.error(
+      '[Digital Twin] Analyze Engine failed:',
+      err
+    );
+
+    showToast(
+      `Analysis failed: ${err.message}`,
+      'error'
+    );
+
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-robot"></i> Analyze Engine'; }
-    if (thinking) thinking.style.display = 'none';
+
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML =
+        '<i class="fa-solid fa-robot"></i> Analyze Engine';
+    }
+
+    if (thinking) {
+      thinking.style.display = 'none';
+    }
   }
 }
-
 /**
  * handleApprove() — approves the current AI recommendation.
  */
@@ -393,18 +476,18 @@ async function handleApprove() {
     || null;
 
   const notes = (document.getElementById('engineerNotes') || {}).value || '';
-  const btn   = document.getElementById('btnApprove');
+  const btn = document.getElementById('btnApprove');
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Approving…'; }
 
   try {
     const response = await fetch(`${API_BASE}/agent/approve`, {
-      method:  'POST',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        engine_id:       currentEngineId,
+      body: JSON.stringify({
+        engine_id: currentEngineId,
         intervention_id: interventionId,
-        engineer_notes:  notes,
+        engineer_notes: notes,
       }),
     });
 
@@ -427,16 +510,16 @@ async function handleApprove() {
  */
 async function handleReject() {
   const notes = (document.getElementById('engineerNotes') || {}).value || '';
-  const btn   = document.getElementById('btnReject');
+  const btn = document.getElementById('btnReject');
 
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Rejecting…'; }
 
   try {
     const response = await fetch(`${API_BASE}/agent/reject`, {
-      method:  'POST',
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
-        engine_id:      currentEngineId,
+      body: JSON.stringify({
+        engine_id: currentEngineId,
         engineer_notes: notes,
       }),
     });
@@ -478,13 +561,13 @@ function updateApprovalStatusBadge(status) {
   if (!badge) return;
   if (status === 'approved') {
     badge.textContent = '✓ Approved';
-    badge.className   = 'approval-status-badge approved';
+    badge.className = 'approval-status-badge approved';
   } else if (status === 'rejected') {
     badge.textContent = '✗ Rejected';
-    badge.className   = 'approval-status-badge rejected';
+    badge.className = 'approval-status-badge rejected';
   } else {
     badge.textContent = '';
-    badge.className   = 'approval-status-badge';
+    badge.className = 'approval-status-badge';
   }
 }
 
@@ -497,7 +580,7 @@ function updateApprovalStatusBadge(status) {
  * @param {boolean} isConnected
  */
 function updateConnectionStatus(isConnected) {
-  const dot   = document.getElementById('statusDot');
+  const dot = document.getElementById('statusDot');
   const label = document.getElementById('statusLabel');
 
   if (dot) {
@@ -527,10 +610,10 @@ function updateLastUpdated() {
  */
 function formatHealthState(state) {
   const map = {
-    healthy:  { text: 'Healthy',  className: 'healthy'  },
-    warning:  { text: 'Warning',  className: 'warning'  },
+    healthy: { text: 'Healthy', className: 'healthy' },
+    warning: { text: 'Warning', className: 'warning' },
     critical: { text: 'Critical', className: 'critical' },
-    failure:  { text: 'Failure',  className: 'failure'  },
+    failure: { text: 'Failure', className: 'failure' },
   };
   const key = (state || '').toLowerCase();
   return map[key] || { text: state || 'Unknown', className: 'unknown' };
@@ -543,9 +626,9 @@ function formatHealthState(state) {
  */
 function formatRisk(risk) {
   const map = {
-    low:      { text: 'Low',      className: 'risk-low',      subtext: 'No immediate concern'         },
-    medium:   { text: 'Medium',   className: 'risk-medium',   subtext: 'Monitor closely'              },
-    high:     { text: 'High',     className: 'risk-high',     subtext: 'Maintenance recommended'      },
+    low: { text: 'Low', className: 'risk-low', subtext: 'No immediate concern' },
+    medium: { text: 'Medium', className: 'risk-medium', subtext: 'Monitor closely' },
+    high: { text: 'High', className: 'risk-high', subtext: 'Maintenance recommended' },
     critical: { text: 'Critical', className: 'risk-critical', subtext: 'Immediate intervention needed' },
   };
   const key = (risk || '').toLowerCase();
@@ -578,9 +661,9 @@ function formatTimestamp(isoString) {
  */
 function getRULColor(rul) {
   if (rul == null) return '';
-  if (rul > 75)  return 'var(--green)';
-  if (rul > 40)  return 'var(--yellow)';
-  if (rul > 15)  return 'var(--orange)';
+  if (rul > 75) return 'var(--green)';
+  if (rul > 40) return 'var(--yellow)';
+  if (rul > 15) return 'var(--orange)';
   return 'var(--red)';
 }
 
@@ -623,8 +706,8 @@ function showToast(message, type = 'success') {
 
   const iconMap = {
     success: 'fa-circle-check',
-    error:   'fa-circle-xmark',
-    info:    'fa-circle-info',
+    error: 'fa-circle-xmark',
+    info: 'fa-circle-info',
     warning: 'fa-triangle-exclamation',
   };
 
@@ -682,3 +765,4 @@ function escapeHtml(str) {
 /*  Bootstrap                                                           */
 /* ------------------------------------------------------------------ */
 document.addEventListener('DOMContentLoaded', init);
+

@@ -13,8 +13,15 @@ BASE_DIR = Path(__file__).parent
 DATA_DIR = BASE_DIR / "data"
 MODELS_DIR = BASE_DIR / "saved_models"
 LOGS_DIR = BASE_DIR / "logs"
+CACHE_DIR = BASE_DIR / ".cache"
+KERAS_DIR = BASE_DIR / ".keras"
+MPL_DIR = BASE_DIR / ".matplotlib"
 
-for _d in [DATA_DIR, MODELS_DIR, LOGS_DIR]:
+# Ensure runtime caches stay within workspace
+os.environ.setdefault("KERAS_HOME", str(KERAS_DIR))
+os.environ.setdefault("MPLCONFIGDIR", str(MPL_DIR))
+
+for _d in [DATA_DIR, MODELS_DIR, LOGS_DIR, CACHE_DIR, KERAS_DIR, MPL_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------

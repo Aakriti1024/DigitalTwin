@@ -25,7 +25,11 @@ from config import (
     N_FEATURES,
     RANDOM_STATE,
 )
-from ml.preprocess import preprocess_pipeline
+from ml.preprocess import (
+    preprocess_pipeline,
+    save_preprocessor,
+    load_preprocessor,
+)
 from ml.models import get_all_models
 from ml.evaluate import compute_metrics, nasa_scoring_function
 
@@ -73,7 +77,7 @@ def train_model(
     os.makedirs(MODELS_DIR, exist_ok=True)
     os.makedirs(LOGS_DIR, exist_ok=True)
 
-    checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_best.h5")
+    checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_best.keras")
 
     callbacks = [
         EarlyStopping(
@@ -106,6 +110,13 @@ def train_model(
         callbacks=callbacks,
         verbose=1,
     )
+
+    if model_name != "transformer":
+        try:
+            h5_path = os.path.join(MODELS_DIR, f"{model_name}_best.h5")
+            model.save(h5_path)
+        except Exception:
+            pass
 
     return model, history
 
@@ -151,6 +162,7 @@ def compare_models(
     # 1. Preprocess
     print("» Preprocessing data …")
     data = preprocess_pipeline(subset=subset, data_dir=data_dir)
+    save_preprocessor(data, subset=subset)
     X_train = data["X_train"]
     y_train = data["y_train"]
     X_val = data["X_val"]
@@ -249,7 +261,7 @@ def load_best_model(subset: str = "FD001"):
     Load the best model identified by a previous compare_models() run.
 
     Reads the model name from LOGS_DIR/best_model.txt, then loads the
-    corresponding weights from MODELS_DIR/<name>_best.h5.
+    corresponding weights from MODELS_DIR/<name>_best.keras or .h5.
 
     Parameters
     ----------
@@ -270,15 +282,41 @@ def load_best_model(subset: str = "FD001"):
     with open(best_path, "r") as f:
         model_name = f.read().strip()
 
-    checkpoint_path = os.path.join(MODELS_DIR, f"{model_name}_best.h5")
-    if not os.path.exists(checkpoint_path):
+    keras_path = os.path.join(MODELS_DIR, f"{model_name}_best.keras")
+    h5_path = os.path.join(MODELS_DIR, f"{model_name}_best.h5")
+
+    if os.path.exists(keras_path):
+        checkpoint_path = keras_path
+    elif os.path.exists(h5_path):
+        checkpoint_path = h5_path
+    else:
         raise FileNotFoundError(
-            f"Model checkpoint not found at '{checkpoint_path}'."
+            f"Model checkpoint not found for '{model_name}' at '{keras_path}' or '{h5_path}'."
         )
 
-    model = tf.keras.models.load_model(checkpoint_path)
+    model = tf.keras.models.load_model(checkpoint_path, compile=False)
     print(f"Loaded best model '{model_name}' from '{checkpoint_path}'.")
     return model, model_name
+
+
+def load_trained_pipeline(subset: str = "FD001"):
+    """
+    Load both the trained best model and the corresponding preprocessing
+    artifacts for inference.
+
+    Parameters
+    ----------
+    subset : str
+
+    Returns
+    -------
+    model : Keras Model
+    preprocessor : dict
+    model_name : str
+    """
+    model, model_name = load_best_model(subset=subset)
+    preprocessor = load_preprocessor(subset=subset)
+    return model, preprocessor, model_name
 
 
 # ---------------------------------------------------------------------------

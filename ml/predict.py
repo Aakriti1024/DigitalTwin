@@ -48,8 +48,16 @@ def mc_dropout_predict(
     mean_pred : np.ndarray, shape (N,)  — mean prediction across samples
     std_pred  : np.ndarray, shape (N,)  — std deviation (uncertainty)
     """
+    if X.shape[0] == 1:
+        X_batch = np.repeat(X, n_samples, axis=0)
+        raw = model(X_batch, training=True)
+        preds = np.asarray(raw).reshape(n_samples, 1)
+        mean_pred = preds.mean(axis=0)
+        std_pred = preds.std(axis=0)
+        return mean_pred, std_pred
+
     preds = np.stack(
-        [model(X, training=True).numpy().ravel() for _ in range(n_samples)],
+        [np.asarray(model(X, training=True)).ravel() for _ in range(n_samples)],
         axis=0,
     )  # shape: (n_samples, N)
 
@@ -156,6 +164,7 @@ def get_health_state(predicted_rul: float) -> dict:
 # ---------------------------------------------------------------------------
 # Full engine-state prediction
 # ---------------------------------------------------------------------------
+
 
 def predict_engine_state(
     model,

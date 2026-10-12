@@ -10,6 +10,8 @@ import sys
 import os
 import argparse
 import time
+import random
+from datetime import datetime, timezone
 
 # Add project root to sys.path
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,9 +28,62 @@ from config import (
     EPOCHS,
     BATCH_SIZE,
     EARLY_STOPPING_PATIENCE,
+    SENSOR_GROUPS,
 )
 import numpy as np
 import pandas as pd
+
+
+COMPARISON_LOG_COLUMNS = [
+    "timestamp",
+    "subset",
+    "model",
+    "seed",
+    "epochs_trained",
+    "training_seconds",
+    "last_window_mae",
+    "last_window_rmse",
+    "last_window_r2",
+    "last_window_nasa_score",
+    "all_window_mae",
+    "all_window_rmse",
+    "all_window_r2",
+    "all_window_nasa_score",
+]
+
+
+def set_random_seeds(seed: int, tf) -> None:
+    """Set Python, NumPy, and TensorFlow random seeds for a training run."""
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.random.set_seed(seed)
+
+
+def append_comparison_rows(csv_path, rows) -> None:
+    """Append completed model runs while preserving any existing log rows."""
+    records = []
+    for row in rows:
+        record = {column: row.get(column) for column in COMPARISON_LOG_COLUMNS}
+        record["timestamp"] = record["timestamp"] or datetime.now(timezone.utc).isoformat()
+        records.append(record)
+    new_rows = pd.DataFrame(records, columns=COMPARISON_LOG_COLUMNS)
+
+    if not os.path.isfile(csv_path):
+        new_rows.to_csv(csv_path, index=False)
+        return
+
+    existing_columns = pd.read_csv(csv_path, nrows=0).columns.tolist()
+    if existing_columns == COMPARISON_LOG_COLUMNS:
+        new_rows.to_csv(csv_path, mode="a", header=False, index=False)
+        return
+
+    # Preserve pre-existing legacy rows, then use the append-only schema going
+    # forward. Legacy fields that did not exist are left empty.
+    legacy_rows = pd.read_csv(csv_path).rename(
+        columns={"training_time": "training_seconds"}
+    )
+    legacy_rows = legacy_rows.reindex(columns=COMPARISON_LOG_COLUMNS)
+    pd.concat([legacy_rows, new_rows], ignore_index=True).to_csv(csv_path, index=False)
 
 
 def parse_args():
@@ -51,7 +106,10 @@ def parse_args():
         "--model",
         type=str,
         default="all",
-        choices=["all", "lstm", "gru", "cnn_lstm", "tcn", "transformer"],
+        choices=[
+            "all", "lstm", "multibranch_lstm", "multibranch_noattn",
+            "gru", "cnn_lstm", "tcn", "transformer",
+        ],
         help="Specific model architecture to train (default: all)",
     )
     parser.add_argument(
@@ -59,6 +117,12 @@ def parse_args():
         type=int,
         default=None,
         help=f"Number of training epochs (default: {EPOCHS})",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for Python, NumPy, and TensorFlow (default: 42)",
     )
     parser.add_argument(
         "--quick",
@@ -98,11 +162,15 @@ def display_comparison_results():
     return True
 
 
-def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick=False):
+def run_training_workflow(
+    subset="FD001", model_choice="all", epochs=None, quick=False, seed=42
+):
     import tensorflow as tf
     from ml.preprocess import preprocess_pipeline
     from ml.models import (
         build_lstm,
+        build_multibranch_lstm,
+        build_multibranch_noattn,
         build_gru,
         build_cnn_lstm,
         build_tcn,
@@ -110,7 +178,10 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
         get_all_models,
     )
     from ml.evaluate import compute_metrics
+    from ml.models import get_group_attention_model
     from ml.predict import mc_dropout_predict, predict_rul, get_health_state
+
+    set_random_seeds(seed, tf)
 
     if quick:
         effective_epochs = 5
@@ -125,6 +196,7 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
     print(f"• Sequence Window:  {SEQUENCE_LENGTH} cycles")
     print(f"• Sensor Features:  {N_FEATURES}")
     print(f"• Epochs:           {effective_epochs}")
+    print(f"• Random Seed:      {seed}")
     print(f"• Batch Size:       {BATCH_SIZE}")
     print("-" * 70)
 
@@ -135,6 +207,8 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
     X_train, y_train = data["X_train"], data["y_train"]
     X_val, y_val = data["X_val"], data["y_val"]
     X_test, y_test = data["X_test"], data["y_test"]
+    X_test_all_windows = data["X_test_all_windows"]
+    y_test_all_windows = data["y_test_all_windows"]
     scaler = data["scaler"]
     feature_cols = data["feature_cols"]
 
@@ -149,6 +223,16 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
     if quick or model_choice == "lstm":
         models_to_train = {"lstm": build_lstm(input_shape)}
         models_to_train["lstm"].compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"]
+        )
+    elif model_choice == "multibranch_lstm":
+        models_to_train = {"multibranch_lstm": build_multibranch_lstm(input_shape)}
+        models_to_train["multibranch_lstm"].compile(
+            optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"]
+        )
+    elif model_choice == "multibranch_noattn":
+        models_to_train = {"multibranch_noattn": build_multibranch_noattn(input_shape)}
+        models_to_train["multibranch_noattn"].compile(
             optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"]
         )
     elif model_choice == "gru":
@@ -215,51 +299,78 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
             verbose=1,
         )
         t_elapsed = time.time() - t_start
+        epochs_trained = len(history.history["loss"])
+        print(f"---> Epochs actually trained: {epochs_trained}")
 
-        # Evaluate on test set
-        print(f"---> Evaluating {name.upper()} on held-out test data...")
+        # Primary C-MAPSS protocol: final window from each test engine.
+        print(f"---> Evaluating {name.upper()} on final test windows (official protocol)...")
         y_pred = model.predict(X_test, verbose=0).ravel()
-        metrics = compute_metrics(y_test, y_pred)
+        last_window_metrics = compute_metrics(y_test, y_pred)
+        y_pred_all_windows = model.predict(X_test_all_windows, verbose=0).ravel()
+        all_window_metrics = compute_metrics(y_test_all_windows, y_pred_all_windows)
+        print(
+            f"     Last-window RMSE: {last_window_metrics['rmse']:.4f} | "
+            f"NASA score: {last_window_metrics['nasa_score']:.4f}"
+        )
+        if name in ("multibranch_lstm", "multibranch_noattn"):
+            attention_model = get_group_attention_model(model)
+            mean_weights = attention_model.predict(X_test, verbose=0).mean(axis=0)
+            weights_text = ", ".join(
+                f"{group}={weight:.3f}"
+                for group, weight in zip(SENSOR_GROUPS, mean_weights)
+            )
+            print(f"     Mean group attention: {weights_text}")
 
         results.append({
+            "subset": subset,
             "model": name,
-            "mae": metrics["mae"],
-            "rmse": metrics["rmse"],
-            "r2": metrics["r2"],
-            "nasa_score": metrics["nasa_score"],
-            "training_time": round(t_elapsed, 2),
+            "seed": seed,
+            "last_window_mae": last_window_metrics["mae"],
+            "last_window_rmse": last_window_metrics["rmse"],
+            "last_window_r2": last_window_metrics["r2"],
+            "last_window_nasa_score": last_window_metrics["nasa_score"],
+            "all_window_mae": all_window_metrics["mae"],
+            "all_window_rmse": all_window_metrics["rmse"],
+            "all_window_r2": all_window_metrics["r2"],
+            "all_window_nasa_score": all_window_metrics["nasa_score"],
+            "epochs_trained": epochs_trained,
+            "training_seconds": round(t_elapsed, 2),
         })
 
     # 4. Compare and select best
     df_results = pd.DataFrame(results)
 
     # Normalized composite score (lower is better)
-    for col in ["rmse", "mae", "nasa_score"]:
+    for col in ["last_window_rmse", "last_window_mae", "last_window_nasa_score"]:
         col_min = df_results[col].min()
         col_max = df_results[col].max()
         denom = col_max - col_min if col_max != col_min else 1.0
         df_results[f"norm_{col}"] = (df_results[col] - col_min) / denom
 
     df_results["composite_score"] = (
-        0.4 * df_results["norm_rmse"]
-        + 0.3 * df_results["norm_mae"]
-        + 0.3 * df_results["norm_nasa_score"]
+        0.4 * df_results["norm_last_window_rmse"]
+        + 0.3 * df_results["norm_last_window_mae"]
+        + 0.3 * df_results["norm_last_window_nasa_score"]
     )
     df_results = df_results.sort_values("composite_score").reset_index(drop=True)
     best_model_name = df_results.iloc[0]["model"]
 
-    # 5. Persist comparison and best model
+    # 5. Append completed runs and persist the best model from this workflow.
     os.makedirs(LOGS_DIR, exist_ok=True)
     csv_path = os.path.join(LOGS_DIR, "model_comparison.csv")
     best_path = os.path.join(LOGS_DIR, "best_model.txt")
-    df_results.to_csv(csv_path, index=False)
+    append_comparison_rows(csv_path, df_results.to_dict("records"))
     with open(best_path, "w") as f:
         f.write(best_model_name)
 
     print("\n" + "=" * 70)
     print(" MODEL EVALUATION SUMMARY")
     print("=" * 70)
-    cols = ["model", "mae", "rmse", "r2", "nasa_score", "training_time", "composite_score"]
+    cols = [
+        "model", "last_window_rmse", "last_window_nasa_score",
+        "all_window_rmse", "all_window_nasa_score", "epochs_trained",
+        "training_seconds", "composite_score",
+    ]
     print(df_results[cols].to_string(index=False, float_format="{:.4f}".format))
     print("-" * 70)
     print(f"★ Selected Best Model: {best_model_name.upper()}")
@@ -295,6 +406,7 @@ def main():
             model_choice=args.model,
             epochs=args.epochs,
             quick=args.quick,
+            seed=args.seed,
         )
         if not success:
             sys.exit(1)

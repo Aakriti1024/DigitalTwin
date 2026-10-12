@@ -41,6 +41,15 @@ SELECTED_SENSORS = [
     "s11", "s12", "s13", "s14", "s15", "s17", "s20", "s21",
 ]
 
+# Named groups used by the multi-branch LSTM. Their members must remain in
+# SELECTED_SENSORS, whose order defines the model input feature order.
+SENSOR_GROUPS = {
+    "temperature": ["s2", "s3", "s4"],
+    "pressure": ["s7", "s11"],
+    "speed": ["s8", "s9", "s13", "s14"],
+    "flow_other": ["s12", "s15", "s17", "s20", "s21"],
+}
+
 N_FEATURES = len(SELECTED_SENSORS)  # 14 features
 
 # ---------------------------------------------------------------------------

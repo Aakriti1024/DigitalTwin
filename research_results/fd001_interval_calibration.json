@@ -1,0 +1,26 @@
+{
+  "subset": "FD001",
+  "mc_samples": 50,
+  "models": {
+    "lstm": {
+      "80": {
+        "empirical_coverage": 0.46,
+        "mean_width": 16.090913772583008
+      },
+      "90": {
+        "empirical_coverage": 0.57,
+        "mean_width": 20.6524600982666
+      }
+    },
+    "multibranch_lstm": {
+      "80": {
+        "empirical_coverage": 0.7,
+        "mean_width": 31.094301223754883
+      },
+      "90": {
+        "empirical_coverage": 0.77,
+        "mean_width": 39.90910720825195
+      }
+    }
+  }
+}

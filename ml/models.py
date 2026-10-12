@@ -20,7 +20,14 @@ import tensorflow as tf
 from tensorflow.keras import layers, Model, Input
 from tensorflow.keras.optimizers import Adam
 
-from config import SEQUENCE_LENGTH, N_FEATURES, DROPOUT_RATE, LEARNING_RATE
+from config import (
+    SEQUENCE_LENGTH,
+    N_FEATURES,
+    DROPOUT_RATE,
+    LEARNING_RATE,
+    SELECTED_SENSORS,
+    SENSOR_GROUPS,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -86,7 +93,130 @@ def build_lstm(
 
 
 # ---------------------------------------------------------------------------
-# 2. GRU
+# 2. Multi-branch LSTM
+# ---------------------------------------------------------------------------
+
+def _sensor_group_indices() -> dict:
+    """Return indices into SELECTED_SENSORS for every configured group."""
+    feature_index = {sensor: index for index, sensor in enumerate(SELECTED_SENSORS)}
+    missing = [
+        sensor
+        for sensors in SENSOR_GROUPS.values()
+        for sensor in sensors
+        if sensor not in feature_index
+    ]
+    if missing:
+        raise ValueError(f"SENSOR_GROUPS contains unknown selected sensors: {missing}")
+    return {
+        group_name: [feature_index[sensor] for sensor in sensors]
+        for group_name, sensors in SENSOR_GROUPS.items()
+    }
+
+
+def get_group_attention_model(model: Model) -> Model:
+    """Return a model that maps inputs to the four group attention weights."""
+    return Model(
+        inputs=model.inputs,
+        outputs=model.get_layer("group_attention_weights").output,
+        name=f"{model.name}_group_attention",
+    )
+
+
+def build_multibranch_lstm(
+    input_shape: tuple = (SEQUENCE_LENGTH, N_FEATURES),
+    dropout_rate: float = DROPOUT_RATE,
+    use_attention: bool = True,
+) -> Model:
+    """Build the four-branch sensor-group LSTM or its no-attention ablation.
+
+    Each named sensor group is encoded by an LSTM(32). The standard variant
+    applies temporal attention within a group and group attention across the
+    four resulting vectors. With ``use_attention=False``, both reductions are
+    plain averages; the exposed group weights are uniformly 0.25.
+    """
+    if input_shape[-1] != len(SELECTED_SENSORS):
+        raise ValueError(
+            "Multi-branch LSTM requires one input feature per SELECTED_SENSORS "
+            f"entry ({len(SELECTED_SENSORS)}), got {input_shape[-1]}."
+        )
+
+    inp = Input(shape=input_shape, name="input")
+    group_vectors = []
+    group_indices = _sensor_group_indices()
+
+    for group_name, indices in group_indices.items():
+        branch = layers.Lambda(
+            lambda tensor, selected=indices: tf.gather(tensor, selected, axis=-1),
+            name=f"{group_name}_slice",
+        )(inp)
+        branch = layers.LSTM(
+            32, return_sequences=True, name=f"{group_name}_lstm"
+        )(branch)
+
+        if use_attention:
+            temporal_scores = layers.Dense(1, name=f"{group_name}_temporal_score")(branch)
+            temporal_weights = layers.Softmax(
+                axis=1, name=f"{group_name}_temporal_attention"
+            )(temporal_scores)
+            branch_vector = layers.Lambda(
+                lambda tensors: tf.reduce_sum(tensors[0] * tensors[1], axis=1),
+                name=f"{group_name}_temporal_context",
+            )([branch, temporal_weights])
+        else:
+            branch_vector = layers.GlobalAveragePooling1D(
+                name=f"{group_name}_temporal_average"
+            )(branch)
+        group_vectors.append(branch_vector)
+
+    group_stack = layers.Lambda(
+        lambda vectors: tf.stack(vectors, axis=1), name="group_vectors"
+    )(group_vectors)
+    if use_attention:
+        group_scores = layers.Dense(1, name="group_attention_score")(group_stack)
+        group_weights_3d = layers.Softmax(axis=1, name="group_attention_softmax")(group_scores)
+        group_weights = layers.Lambda(
+            lambda weights: tf.squeeze(weights, axis=-1), name="group_attention_weights"
+        )(group_weights_3d)
+        group_context = layers.Lambda(
+            lambda tensors: tf.reduce_sum(
+                tensors[0] * tf.expand_dims(tensors[1], axis=-1), axis=1
+            ),
+            name="group_attention_context",
+        )([group_stack, group_weights])
+    else:
+        group_weights = layers.Lambda(
+            lambda vectors: tf.ones_like(vectors[:, :, 0]) / tf.cast(
+                tf.shape(vectors)[1], vectors.dtype
+            ),
+            name="group_attention_weights",
+        )(group_stack)
+        group_context = layers.Lambda(
+            lambda tensors: tf.reduce_sum(
+                tensors[0] * tf.expand_dims(tensors[1], axis=-1), axis=1
+            ),
+            name="group_average",
+        )([group_stack, group_weights])
+
+    x = layers.Dense(32, activation="relu", name="dense_1")(group_context)
+    x = layers.Dropout(dropout_rate, name="final_drop")(x)
+    out = layers.Dense(1, name="rul_output")(x)
+
+    model_name = "MultiBranchLSTM" if use_attention else "MultiBranchLSTM_NoAttn"
+    return Model(inputs=inp, outputs=out, name=model_name)
+
+
+def build_multibranch_noattn(
+    input_shape: tuple = (SEQUENCE_LENGTH, N_FEATURES),
+    dropout_rate: float = DROPOUT_RATE,
+) -> Model:
+    """Build the multi-branch LSTM ablation with temporal/group averaging."""
+    return build_multibranch_lstm(
+        input_shape=input_shape, dropout_rate=dropout_rate, use_attention=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. GRU
 # ---------------------------------------------------------------------------
 
 def build_gru(
@@ -358,7 +488,7 @@ def get_all_models(
     input_shape: tuple = (SEQUENCE_LENGTH, N_FEATURES),
 ) -> dict:
     """
-    Build and compile all five architectures.
+    Build and compile all architectures.
 
     Parameters
     ----------
@@ -367,10 +497,12 @@ def get_all_models(
     Returns
     -------
     dict mapping model name → compiled Keras Model
-        Keys: 'lstm', 'gru', 'cnn_lstm', 'tcn', 'transformer'
+        Includes 'multibranch_lstm' and the 'multibranch_noattn' ablation.
     """
     builders = {
         "lstm": build_lstm,
+        "multibranch_lstm": build_multibranch_lstm,
+        "multibranch_noattn": build_multibranch_noattn,
         "gru": build_gru,
         "cnn_lstm": build_cnn_lstm,
         "tcn": build_tcn,

@@ -22,7 +22,6 @@ from config import (
     MAX_RUL,
     N_OPERATING_CLUSTERS,
     TEST_SIZE,
-    VALIDATION_SIZE,
     RANDOM_STATE,
     DATA_DIR,
 )
@@ -209,6 +208,7 @@ def make_sequences(
     df: pd.DataFrame,
     seq_len: int = SEQUENCE_LENGTH,
     feature_cols=None,
+    last_only: bool = False,
 ):
     """
     Build sliding-window sequences over each engine's time series.
@@ -247,7 +247,8 @@ def make_sequences(
             rul_vals = np.concatenate([rul_pad, rul_vals])
             n_cycles = seq_len
 
-        for start in range(n_cycles - seq_len + 1):
+        starts = [n_cycles - seq_len] if last_only else range(n_cycles - seq_len + 1)
+        for start in starts:
             end = start + seq_len
             X_list.append(features[start:end])
             y_list.append(rul_vals[end - 1])
@@ -331,23 +332,33 @@ def preprocess_pipeline(subset: str = "FD001", data_dir: str = None) -> dict:
         # RUL at current cycle = rul_at_last + (last_cycle − current_cycle)
         return rul_at_last + (row["last_cycle"] - row["cycle"])
 
+    # Preserve raw RUL-file targets for official final-window evaluation.
     test_df["RUL"] = test_df.apply(_test_rul, axis=1)
-    test_df["RUL"] = test_df["RUL"].clip(upper=MAX_RUL)
     test_df = test_df.drop(columns=["last_cycle"])
 
-    # 7. Make sequences
-    X_all, y_all = make_sequences(train_df, SEQUENCE_LENGTH, feature_cols)
-    X_test, y_test = make_sequences(test_df, SEQUENCE_LENGTH, feature_cols)
-
-    # 8. Split train → train / val
-    # First split off test fraction, then split remainder into train/val
-    X_train, X_val, y_train, y_val = train_test_split(
-        X_all,
-        y_all,
-        test_size=VALIDATION_SIZE,
-        random_state=RANDOM_STATE,
-        shuffle=True,
+    # 7. Split engines before making windows to prevent engine leakage.
+    engine_ids = train_df["engine_id"].unique()
+    train_engine_ids, val_engine_ids = train_test_split(
+        engine_ids, test_size=TEST_SIZE, random_state=RANDOM_STATE, shuffle=True
     )
+    train_split_df = train_df[train_df["engine_id"].isin(train_engine_ids)]
+    val_split_df = train_df[train_df["engine_id"].isin(val_engine_ids)]
+    X_train, y_train = make_sequences(train_split_df, SEQUENCE_LENGTH, feature_cols)
+    X_val, y_val = make_sequences(val_split_df, SEQUENCE_LENGTH, feature_cols)
+    X_test, y_test = make_sequences(
+        test_df, SEQUENCE_LENGTH, feature_cols, last_only=True
+    )
+    X_test_all_windows, y_test_all_windows = make_sequences(
+        test_df, SEQUENCE_LENGTH, feature_cols
+    )
+
+    # 8. Verify one final test window for every RUL-file entry.
+    # Final-window evaluation must have one target per test engine.
+    if len(y_test) != len(rul_series):
+        raise ValueError(
+            "Expected one final test window per RUL-file entry; "
+            f"got {len(y_test)} windows for {len(rul_series)} RUL values."
+        )
 
     return {
         "X_train": X_train,
@@ -356,6 +367,8 @@ def preprocess_pipeline(subset: str = "FD001", data_dir: str = None) -> dict:
         "y_val": y_val,
         "X_test": X_test,
         "y_test": y_test,
+        "X_test_all_windows": X_test_all_windows,
+        "y_test_all_windows": y_test_all_windows,
         "scaler": scaler,
         "feature_cols": feature_cols,
         "subset": subset,

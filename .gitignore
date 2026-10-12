@@ -23,7 +23,11 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-
+test_FD001.txt
+train_FD001.txt
+RUL_FD001.txt
+code/
+assets/
 # Virtual Environments
 venv/
 env/

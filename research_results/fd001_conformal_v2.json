@@ -1,0 +1,160 @@
+{
+  "calibration_sample_sizes": {
+    "all": 3490,
+    "test_like": 400
+  },
+  "models": {
+    "lstm": {
+      "all": {
+        "raw": {
+          "80": {
+            "half_width": 13.703845977783203,
+            "quantile_rank": 2793,
+            "quantile_level": 0.8002865329512894,
+            "empirical_coverage": 0.71,
+            "mean_width": 26.86307144165039
+          },
+          "90": {
+            "half_width": 19.898521423339844,
+            "quantile_rank": 3142,
+            "quantile_level": 0.9002865329512894,
+            "empirical_coverage": 0.81,
+            "mean_width": 38.5673828125
+          }
+        },
+        "capped": {
+          "80": {
+            "half_width": 13.703845977783203,
+            "quantile_rank": 2793,
+            "quantile_level": 0.8002865329512894,
+            "empirical_coverage": 0.75,
+            "mean_width": 26.86307144165039
+          },
+          "90": {
+            "half_width": 19.898521423339844,
+            "quantile_rank": 3142,
+            "quantile_level": 0.9002865329512894,
+            "empirical_coverage": 0.87,
+            "mean_width": 38.5673828125
+          }
+        }
+      },
+      "test_like": {
+        "raw": {
+          "80": {
+            "half_width": 16.03742218017578,
+            "quantile_rank": 321,
+            "quantile_level": 0.8025,
+            "empirical_coverage": 0.73,
+            "mean_width": 31.32931900024414
+          },
+          "90": {
+            "half_width": 22.25011444091797,
+            "quantile_rank": 361,
+            "quantile_level": 0.9025,
+            "empirical_coverage": 0.9,
+            "mean_width": 42.89259719848633
+          }
+        },
+        "capped": {
+          "80": {
+            "half_width": 16.03742218017578,
+            "quantile_rank": 321,
+            "quantile_level": 0.8025,
+            "empirical_coverage": 0.78,
+            "mean_width": 31.32931900024414
+          },
+          "90": {
+            "half_width": 22.25011444091797,
+            "quantile_rank": 361,
+            "quantile_level": 0.9025,
+            "empirical_coverage": 0.93,
+            "mean_width": 42.89259719848633
+          }
+        }
+      }
+    },
+    "multibranch_lstm": {
+      "all": {
+        "raw": {
+          "80": {
+            "half_width": 16.28400421142578,
+            "quantile_rank": 2793,
+            "quantile_level": 0.8002865329512894,
+            "empirical_coverage": 0.72,
+            "mean_width": 31.952953338623047
+          },
+          "90": {
+            "half_width": 22.543663024902344,
+            "quantile_rank": 3142,
+            "quantile_level": 0.9002865329512894,
+            "empirical_coverage": 0.82,
+            "mean_width": 43.60213851928711
+          }
+        },
+        "capped": {
+          "80": {
+            "half_width": 16.28400421142578,
+            "quantile_rank": 2793,
+            "quantile_level": 0.8002865329512894,
+            "empirical_coverage": 0.77,
+            "mean_width": 31.952953338623047
+          },
+          "90": {
+            "half_width": 22.543663024902344,
+            "quantile_rank": 3142,
+            "quantile_level": 0.9002865329512894,
+            "empirical_coverage": 0.87,
+            "mean_width": 43.60213851928711
+          }
+        }
+      },
+      "test_like": {
+        "raw": {
+          "80": {
+            "half_width": 18.017488479614258,
+            "quantile_rank": 321,
+            "quantile_level": 0.8025,
+            "empirical_coverage": 0.76,
+            "mean_width": 35.23004150390625
+          },
+          "90": {
+            "half_width": 23.1427001953125,
+            "quantile_rank": 361,
+            "quantile_level": 0.9025,
+            "empirical_coverage": 0.83,
+            "mean_width": 44.692378997802734
+          }
+        },
+        "capped": {
+          "80": {
+            "half_width": 18.017488479614258,
+            "quantile_rank": 321,
+            "quantile_level": 0.8025,
+            "empirical_coverage": 0.8,
+            "mean_width": 35.23004150390625
+          },
+          "90": {
+            "half_width": 23.1427001953125,
+            "quantile_rank": 361,
+            "quantile_level": 0.9025,
+            "empirical_coverage": 0.89,
+            "mean_width": 44.692378997802734
+          }
+        }
+      }
+    }
+  },
+  "subset": "FD001",
+  "test_like_calibration": {
+    "seed": 42,
+    "truncations_per_validation_engine": 20,
+    "method": "Each engine from the training validation split contributes a fixed number of seeded random truncation windows."
+  },
+  "test_target_capping": {
+    "max_rul": 125,
+    "targets_capped_at_max_rul": false,
+    "maximum_test_target": 145.0,
+    "method": "Test targets are raw RUL_FD001.txt last-cycle values; preprocess_pipeline does not cap test RUL."
+  }
+}

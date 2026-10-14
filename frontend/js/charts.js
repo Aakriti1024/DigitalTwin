@@ -157,6 +157,17 @@ function createRULTrendChart() {
           pointRadius:     0,
           tension:         0.3,
         },
+        // Reference RUL (dataset ground-truth)
+        {
+          label:           'Reference RUL (Dataset)',
+          data:            [],
+          borderColor:     '#94a3b8',
+          borderDash:      [4, 4],
+          borderWidth:     1.5,
+          pointRadius:     0,
+          tension:         0.1,
+          fill:            false,
+        },
       ],
     },
     options: {
@@ -267,6 +278,7 @@ function updateRULTrendChart(historyData) {
 
   const labels  = historyData.map(d => d.cycle);
   const rul     = historyData.map(d => d.rul     != null ? Math.round(d.rul)       : null);
+  const refRul  = historyData.map(d => d.reference_rul != null ? Math.round(d.reference_rul) : null);
   const upper   = historyData.map(d => d.rul_upper != null ? Math.round(d.rul_upper) : null);
   const lower   = historyData.map(d => d.rul_lower != null ? Math.round(d.rul_lower) : null);
 
@@ -277,9 +289,12 @@ function updateRULTrendChart(historyData) {
   rulTrendChart.data.datasets[0].data = hasBands ? upper : [];
   rulTrendChart.data.datasets[1].data = rul;
   rulTrendChart.data.datasets[2].data = hasBands ? lower : [];
+  if (rulTrendChart.data.datasets[3]) {
+    rulTrendChart.data.datasets[3].data = refRul;
+  }
 
   // Dynamically colour the RUL line based on the latest value
-  const latestRUL = rul[rul.length - 1];
+  const latestRUL = rul.filter(v => v != null).pop();
   if (latestRUL != null) {
     const lineColor = latestRUL > 75 ? '#3b82f6'
                     : latestRUL > 40 ? '#eab308'

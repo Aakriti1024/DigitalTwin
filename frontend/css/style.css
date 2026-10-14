@@ -1143,6 +1143,160 @@ ul, ol { padding-left: 1.2rem; }
 .rul-badge.rul-failure   { background: rgba(239,68,68,0.15);  color: var(--red); }
 
 /* ================================================================
+   REPLAY CONTROL BAR
+   ================================================================ */
+.replay-row {
+  grid-column: 1 / -1;
+  margin-bottom: 0.25rem;
+}
+
+.replay-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  padding: 0.85rem 1.4rem;
+  background: linear-gradient(135deg, #131c31 0%, #17233d 100%);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.replay-bar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.replay-title {
+  font-weight: 700;
+  font-size: 0.95rem;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.replay-title i {
+  color: var(--blue-light);
+}
+
+.replay-status-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--blue-light);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}
+
+.warmup-badge {
+  background: rgba(234, 179, 8, 0.15);
+  color: var(--yellow-light);
+  border-color: rgba(234, 179, 8, 0.3);
+}
+
+.warmup-badge.ready {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--green-light);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.replay-bar-center {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.replay-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.btn-replay {
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-light);
+  padding: 0.4rem 0.85rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  transition: var(--transition);
+}
+
+.btn-replay:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--blue-light);
+  color: #fff;
+}
+
+.btn-replay.active-play {
+  background: var(--blue-dark);
+  border-color: var(--blue);
+  color: #fff;
+  box-shadow: var(--shadow-glow-blue);
+}
+
+.btn-replay-reset:hover {
+  border-color: var(--red-light);
+  color: var(--red-light);
+}
+
+.replay-bar-right {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex-wrap: wrap;
+}
+
+.speed-label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.speed-select {
+  background: var(--bg-input);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.65rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.reference-rul-indicator {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.25rem 0.65rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.reference-rul-indicator strong {
+  color: var(--blue-light);
+}
+
+/* ================================================================
    RESPONSIVE
    ================================================================ */
 @media (max-width: 700px) {

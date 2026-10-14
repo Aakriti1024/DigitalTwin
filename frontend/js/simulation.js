@@ -144,7 +144,15 @@ function populateInterventionSelect(interventions) {
       opt.selected = true;
     }
     select.appendChild(opt);
-  });
+  }
+
+  );
+  select.onchange = () => {
+    selectedInterventionId = select.value || null;
+
+    console.log("DROPDOWN VALUE:", select.value);
+    console.log("SELECTED INTERVENTION:", selectedInterventionId);
+  };
 }
 
 /**

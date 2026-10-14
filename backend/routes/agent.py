@@ -78,8 +78,8 @@ async def get_interventions(engine_id: str = Query(..., description="Engine iden
     twin = registry.get_or_create(engine_id)
     state = twin.to_dict()
 
-    rul = float(state["predicted_rul"])
-    health_score = float(state["health_score"])
+    rul = float(state.get("predicted_rul") or state.get("reference_rul") or 100.0)
+    health_score = float(state.get("health_score", 100.0))
     health_ratio = health_score / 100.0
 
     try:
@@ -126,7 +126,7 @@ async def approve_recommendation(request: ApprovalRequest):
     try:
         sim_result = simulate_intervention(
             current_rul=rul,
-            health_score=health_score / 100.0,
+            current_health_score=health_score / 100.0,
             intervention_id=request.intervention_id,
             n_future_cycles=50,
         )

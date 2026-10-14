@@ -49,6 +49,36 @@
 <!-- ===================== MAIN CONTENT ===================== -->
 <main class="dashboard-grid">
 
+  <!-- ========== REPLAY CONTROL BAR ========== -->
+  <section class="row replay-row">
+    <div class="card replay-bar">
+      <div class="replay-bar-left">
+        <span class="replay-title"><i class="fa-solid fa-play-circle"></i> Sensor Stream Replay</span>
+        <div class="replay-status-group">
+          <span class="badge" id="replayStatusBadge">Ready · Cycle 0/31</span>
+          <span class="badge warmup-badge" id="warmupBadge">Warm-up: 0/30</span>
+        </div>
+      </div>
+      <div class="replay-bar-center">
+        <div class="replay-btn-group">
+          <button class="btn btn-replay" id="btnReplayPlay" title="Play (progressive streaming)"><i class="fa-solid fa-play"></i> Play</button>
+          <button class="btn btn-replay" id="btnReplayPause" title="Pause streaming"><i class="fa-solid fa-pause"></i> Pause</button>
+          <button class="btn btn-replay" id="btnReplayStep" title="Advance 1 cycle"><i class="fa-solid fa-forward-step"></i> Step</button>
+          <button class="btn btn-replay btn-replay-reset" id="btnReplayReset" title="Reset to cycle 0"><i class="fa-solid fa-rotate-left"></i> Reset</button>
+        </div>
+      </div>
+      <div class="replay-bar-right">
+        <label for="replaySpeedSelect" class="speed-label"><i class="fa-solid fa-gauge-simple-high"></i> Speed:</label>
+        <select id="replaySpeedSelect" class="speed-select">
+          <option value="2.0">0.5x (2s/cycle)</option>
+          <option value="1.0" selected>1.0x (1s/cycle)</option>
+          <option value="0.5">2.0x (0.5s/cycle)</option>
+        </select>
+        <span class="reference-rul-indicator" id="refRulIndicator">Reference RUL: <strong id="refRulValue">—</strong></span>
+      </div>
+    </div>
+  </section>
+
   <!-- ========== ROW 1: TOP STATS ========== -->
   <section class="row stats-row">
 

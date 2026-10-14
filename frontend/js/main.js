@@ -80,6 +80,22 @@ function init() {
     });
   });
 
+  // --- Replay control buttons ---
+  const btnReplayPlay = document.getElementById('btnReplayPlay');
+  if (btnReplayPlay) btnReplayPlay.addEventListener('click', handleReplayPlay);
+
+  const btnReplayPause = document.getElementById('btnReplayPause');
+  if (btnReplayPause) btnReplayPause.addEventListener('click', handleReplayPause);
+
+  const btnReplayStep = document.getElementById('btnReplayStep');
+  if (btnReplayStep) btnReplayStep.addEventListener('click', handleReplayStep);
+
+  const btnReplayReset = document.getElementById('btnReplayReset');
+  if (btnReplayReset) btnReplayReset.addEventListener('click', handleReplayReset);
+
+  const replaySpeedSelect = document.getElementById('replaySpeedSelect');
+  if (replaySpeedSelect) replaySpeedSelect.addEventListener('change', handleReplaySpeed);
+
   // --- Start polling and load first data ---
   startPolling();
   fetchEngineState();
@@ -118,17 +134,27 @@ function stopPolling() {
  */
 async function fetchEngineState() {
   try {
-    const url = `${API_BASE}/twin/state?engine_id=${encodeURIComponent(currentEngineId)}`;
+    const url = `${API_BASE}/twin/replay/status?engine_id=${encodeURIComponent(currentEngineId)}`;
     const response = await fetch(url);
 
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    if (response.ok) {
+      const data = await response.json();
+      currentTwinState = data.twin_state;
+      updateConnectionStatus(true);
+      updateAllUI(data.twin_state, data.status);
+      return;
     }
 
-    const data = await response.json();
-    currentTwinState = data;
+    // Fallback to /twin/state if needed
+    const fallbackUrl = `${API_BASE}/twin/state?engine_id=${encodeURIComponent(currentEngineId)}`;
+    const fbResponse = await fetch(fallbackUrl);
+    if (!fbResponse.ok) {
+      throw new Error(`HTTP ${fbResponse.status}: ${fbResponse.statusText}`);
+    }
+    const fbData = await fbResponse.json();
+    currentTwinState = fbData;
     updateConnectionStatus(true);
-    updateAllUI(data);
+    updateAllUI(fbData);
   } catch (err) {
     console.error('[Digital Twin] fetchEngineState error:', err);
     updateConnectionStatus(false);
@@ -140,11 +166,40 @@ async function fetchEngineState() {
  * @param {number} nCycles  Number of historical cycles to request.
  * @returns {Promise<Array>}
  */
+
 async function fetchSensorHistory(nCycles = 50) {
   const url = `${API_BASE}/twin/history?engine_id=${encodeURIComponent(currentEngineId)}&n_cycles=${nCycles}`;
   const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return response.json();
+
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+
+  const payload = await response.json();
+
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+
+  const rulHistory = payload.rul_history || [];
+  const sensorTrends = payload.sensor_trends || {};
+
+  return rulHistory.map(point => {
+    const sensors = {};
+
+    for (const [sensorId, readings] of Object.entries(sensorTrends)) {
+      const reading = readings.find(item => item.cycle === point.cycle);
+
+      if (reading) {
+        sensors[sensorId] = reading.value;
+      }
+    }
+
+    return {
+      ...point,
+      sensors
+    };
+  });
 }
 
 /* ------------------------------------------------------------------ */
@@ -152,10 +207,12 @@ async function fetchSensorHistory(nCycles = 50) {
 /* ------------------------------------------------------------------ */
 
 /**
- * updateAllUI(state) — central dispatch; updates every dashboard section.
+ * updateAllUI(state, replayStatus) — central dispatch; updates every dashboard section.
  * @param {Object} state  Twin state object from the API.
+ * @param {Object} [replayStatus] Replay status from the API.
  */
-function updateAllUI(state) {
+function updateAllUI(state, replayStatus = null) {
+  updateReplayBar(state, replayStatus);
   updateTopStats(state);
   updateRULTrend(state);
   updateHealthGauge(state);
@@ -164,6 +221,53 @@ function updateAllUI(state) {
   updateHistoryTable(state.intervention_history || []);
   updateMetricsTable(state.model_metrics || null);
   updateLastUpdated();
+}
+
+/**
+ * updateReplayBar(state, replayStatus) — updates replay controls & indicators.
+ */
+function updateReplayBar(state, replayStatus) {
+  if (!state) return;
+
+  const statusBadge = document.getElementById('replayStatusBadge');
+  const warmupBadge = document.getElementById('warmupBadge');
+  const refRulVal = document.getElementById('refRulValue');
+  const playBtn = document.getElementById('btnReplayPlay');
+
+  if (refRulVal) {
+    refRulVal.textContent = state.reference_rul != null
+      ? `${Math.round(state.reference_rul)} cycles`
+      : '—';
+  }
+
+  if (warmupBadge) {
+    if (state.is_warmed_up) {
+      warmupBadge.textContent = 'Window Full: Active Model Predictions (MC-Dropout)';
+      warmupBadge.className = 'badge warmup-badge ready';
+    } else {
+      warmupBadge.textContent = `Collecting sensor history: ${state.warmup_progress || '0/30'} readings`;
+      warmupBadge.className = 'badge warmup-badge';
+    }
+  }
+
+  if (statusBadge) {
+    const cycle = state.current_cycle || 0;
+    const isPlaying = replayStatus ? replayStatus.is_playing : false;
+    const total = replayStatus ? replayStatus.total_cycles : 31;
+    const st = replayStatus ? replayStatus.status : (cycle > 0 ? 'paused' : 'ready');
+
+    statusBadge.textContent = `${st.toUpperCase()} · Cycle ${cycle}/${total}`;
+
+    if (playBtn) {
+      if (isPlaying) {
+        playBtn.classList.add('active-play');
+        playBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Playing';
+      } else {
+        playBtn.classList.remove('active-play');
+        playBtn.innerHTML = '<i class="fa-solid fa-play"></i> Play';
+      }
+    }
+  }
 }
 
 /**
@@ -185,24 +289,35 @@ function updateTopStats(state) {
   const statusMsg = document.getElementById('statusMessage');
   if (statusMsg) statusMsg.textContent = state.status_message || '';
 
-  // Predicted RUL
+  // Predicted RUL & Uncertainty
   const rulValue = document.getElementById('rulValue');
-  if (rulValue) {
-    const rul = state.predicted_rul != null ? Math.round(state.predicted_rul) : '—';
-    rulValue.textContent = rul;
-    // Colour by severity
-    rulValue.style.color = getRULColor(state.predicted_rul);
-  }
-
-  // Uncertainty range
   const rulUnc = document.getElementById('rulUncertainty');
-  if (rulUnc) {
-    const lower = state.rul_lower != null ? Math.round(state.rul_lower) : null;
-    const upper = state.rul_upper != null ? Math.round(state.rul_upper) : null;
-    if (lower != null && upper != null) {
-      rulUnc.textContent = `± ${Math.round((upper - lower) / 2)} cycles  (${lower}–${upper})`;
+
+  if (rulValue) {
+    if (!state.is_warmed_up) {
+      rulValue.textContent = 'Warm-up';
+      rulValue.style.fontSize = '1.7rem';
+      rulValue.style.color = '#eab308';
+      if (rulUnc) {
+        rulUnc.textContent = `Collecting history: ${state.warmup_progress || '0/30'} readings`;
+        rulUnc.style.color = '#eab308';
+      }
     } else {
-      rulUnc.textContent = '± — cycles';
+      const rul = state.predicted_rul != null ? Math.round(state.predicted_rul) : '—';
+      rulValue.textContent = rul;
+      rulValue.style.fontSize = '';
+      rulValue.style.color = getRULColor(state.predicted_rul);
+
+      if (rulUnc) {
+        const lower = state.rul_lower != null ? Math.round(state.rul_lower) : null;
+        const upper = state.rul_upper != null ? Math.round(state.rul_upper) : null;
+        if (lower != null && upper != null) {
+          rulUnc.textContent = `± ${Math.round((upper - lower) / 2)} cycles  (${lower}–${upper})`;
+        } else {
+          rulUnc.textContent = '± — cycles';
+        }
+        rulUnc.style.color = '';
+      }
     }
   }
 
@@ -348,6 +463,93 @@ function updateMetricsTable(metrics) {
 /* ------------------------------------------------------------------ */
 
 /**
+ * handleReplayPlay() — starts progressive replay streaming.
+ */
+async function handleReplayPlay() {
+  const speed = document.getElementById('replaySpeedSelect')?.value || '1.0';
+  try {
+    const res = await fetch(`${API_BASE}/twin/replay/start?engine_id=${encodeURIComponent(currentEngineId)}&interval_sec=${speed}`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      const data = await res.json();
+      currentTwinState = data.twin_state;
+      updateAllUI(data.twin_state, data.status);
+    }
+  } catch (err) {
+    console.error('[Digital Twin] Play error:', err);
+  }
+}
+
+/**
+ * handleReplayPause() — pauses progressive replay.
+ */
+async function handleReplayPause() {
+  try {
+    const res = await fetch(`${API_BASE}/twin/replay/pause?engine_id=${encodeURIComponent(currentEngineId)}`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      const data = await res.json();
+      currentTwinState = data.twin_state;
+      updateAllUI(data.twin_state, data.status);
+    }
+  } catch (err) {
+    console.error('[Digital Twin] Pause error:', err);
+  }
+}
+
+/**
+ * handleReplayStep() — advances replay by exactly 1 cycle.
+ */
+async function handleReplayStep() {
+  try {
+    const res = await fetch(`${API_BASE}/twin/replay/step?engine_id=${encodeURIComponent(currentEngineId)}`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      const data = await res.json();
+      currentTwinState = data.twin_state;
+      updateAllUI(data.twin_state, data.status);
+    }
+  } catch (err) {
+    console.error('[Digital Twin] Step error:', err);
+  }
+}
+
+/**
+ * handleReplayReset() — resets replay and twin state to cycle 0.
+ */
+async function handleReplayReset() {
+  try {
+    const res = await fetch(`${API_BASE}/twin/replay/reset?engine_id=${encodeURIComponent(currentEngineId)}`, {
+      method: 'POST',
+    });
+    if (res.ok) {
+      const data = await res.json();
+      currentTwinState = data.twin_state;
+      updateAllUI(data.twin_state, data.status);
+    }
+  } catch (err) {
+    console.error('[Digital Twin] Reset error:', err);
+  }
+}
+
+/**
+ * handleReplaySpeed() — updates playback speed.
+ */
+async function handleReplaySpeed() {
+  const speed = document.getElementById('replaySpeedSelect')?.value || '1.0';
+  try {
+    await fetch(`${API_BASE}/twin/replay/speed?engine_id=${encodeURIComponent(currentEngineId)}&interval_sec=${speed}`, {
+      method: 'POST',
+    });
+  } catch (err) {
+    console.error('[Digital Twin] Speed error:', err);
+  }
+}
+
+/**
  * handleAnalyze() — calls the AI agent analysis endpoint.
  */
 async function handleAnalyze() {
@@ -424,10 +626,33 @@ async function handleAnalyze() {
     // ---------------------------------------------------------
     // 5. Populate What-if Simulation
     // ---------------------------------------------------------
+
     if (typeof populateInterventionSelect === 'function') {
-      populateInterventionSelect(
-        analysis.interventions || []
-      );
+      try {
+        const interventionsResponse = await fetch(
+          `${API_BASE}/simulation/interventions?engine_id=${encodeURIComponent(currentEngineId)}`
+        );
+
+        if (!interventionsResponse.ok) {
+          throw new Error(
+            `Interventions API failed: ${interventionsResponse.status}`
+          );
+        }
+
+        const interventionData = await interventionsResponse.json();
+
+        populateInterventionSelect(
+          interventionData.interventions || []
+        );
+
+        console.log(
+          '[Digital Twin] Loaded interventions:',
+          interventionData.interventions
+        );
+      } catch (error) {
+        console.error('[Digital Twin] Failed to load interventions:', error);
+        populateInterventionSelect(analysis.interventions || []);
+      }
     }
 
     // ---------------------------------------------------------
@@ -471,9 +696,16 @@ async function handleApprove() {
     return;
   }
 
-  const interventionId = (typeof selectedInterventionId !== 'undefined' && selectedInterventionId)
-    || (currentAnalysis.recommended_intervention_id)
+  const dropdown = document.getElementById('whatIfSelect');
+
+  const interventionId =
+    (dropdown && dropdown.value)
+    || (typeof selectedInterventionId !== 'undefined' && selectedInterventionId)
+    || currentAnalysis.recommended_intervention_id
     || null;
+
+  console.log('[APPROVE DEBUG] Dropdown value:', dropdown?.value);
+  console.log('[APPROVE DEBUG] Sending intervention ID:', interventionId);
 
   const notes = (document.getElementById('engineerNotes') || {}).value || '';
   const btn = document.getElementById('btnApprove');
@@ -509,10 +741,30 @@ async function handleApprove() {
  * handleReject() — rejects the current AI recommendation.
  */
 async function handleReject() {
-  const notes = (document.getElementById('engineerNotes') || {}).value || '';
+  if (!currentAnalysis) {
+    showToast('Run analysis before rejecting.', 'warning');
+    return;
+  }
+
+  const interventionId =
+    (typeof selectedInterventionId !== 'undefined' && selectedInterventionId) ||
+    currentAnalysis.recommended_intervention_id ||
+    null;
+
+  if (!interventionId) {
+    showToast('No intervention selected. Run analysis again.', 'warning');
+    return;
+  }
+
+  const notes =
+    (document.getElementById('engineerNotes') || {}).value || '';
+
   const btn = document.getElementById('btnReject');
 
-  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Rejecting…'; }
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Rejecting…';
+  }
 
   try {
     const response = await fetch(`${API_BASE}/agent/reject`, {
@@ -520,23 +772,39 @@ async function handleReject() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         engine_id: currentEngineId,
-        engineer_notes: notes,
-      }),
+        intervention_id: interventionId,
+        engineer_notes: notes
+      })
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const result = await response.json().catch(() => ({}));
 
-    showToast('Recommendation rejected. No action will be taken.', 'info');
+    if (!response.ok) {
+      throw new Error(
+        result.detail || `HTTP ${response.status}`
+      );
+    }
+
+    showToast(
+      result.message || 'Recommendation rejected. No action will be taken.',
+      'info'
+    );
+
     updateApprovalStatusBadge('rejected');
-    fetchEngineState();
+    await fetchEngineState();
+
   } catch (err) {
     console.error('[Digital Twin] handleReject error:', err);
     showToast(`Rejection failed: ${err.message}`, 'error');
+
   } finally {
-    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-circle-xmark"></i> Reject'; }
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML =
+        '<i class="fa-solid fa-circle-xmark"></i> Reject';
+    }
   }
 }
-
 /* ------------------------------------------------------------------ */
 /*  Approval helpers                                                    */
 /* ------------------------------------------------------------------ */

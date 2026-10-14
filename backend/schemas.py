@@ -78,15 +78,18 @@ class EngineStateResponse(BaseModel):
     current_cycle: int
     health_state: HealthState
     health_score: float = Field(..., ge=0.0, le=100.0, description="0 (failed) – 100 (perfect).")
-    predicted_rul: float = Field(..., description="Predicted remaining useful life in cycles.")
-    rul_lower: float = Field(..., description="Lower bound of RUL confidence interval.")
-    rul_upper: float = Field(..., description="Upper bound of RUL confidence interval.")
-    uncertainty: float = Field(..., description="Model uncertainty / half-width of CI.")
-    degradation_rate: float = Field(..., description="Estimated cycles of RUL lost per cycle (negative = degrading).")
-    is_degradation_accelerating: bool
-    risk_level: RiskLevel
+    predicted_rul: Optional[float] = Field(default=None, description="Predicted remaining useful life in cycles.")
+    rul_lower: Optional[float] = Field(default=None, description="Lower bound of RUL confidence interval.")
+    rul_upper: Optional[float] = Field(default=None, description="Upper bound of RUL confidence interval.")
+    uncertainty: Optional[float] = Field(default=None, description="Model uncertainty / half-width of CI.")
+    reference_rul: Optional[float] = Field(default=None, description="Dataset ground truth reference RUL if known.")
+    is_warmed_up: bool = Field(default=False, description="True once SEQUENCE_LENGTH readings are collected.")
+    warmup_progress: str = Field(default="0/30", description="Warm-up progress string.")
+    degradation_rate: float = Field(default=0.0, description="Estimated cycles of RUL lost per cycle (negative = degrading).")
+    is_degradation_accelerating: bool = False
+    risk_level: RiskLevel = RiskLevel.Low
     sensor_readings: Dict[str, float] = Field(default_factory=dict)
-    recent_rul_trend: List[float] = Field(default_factory=list, description="Last N RUL predictions for sparkline.")
+    recent_rul_trend: List[Optional[float]] = Field(default_factory=list, description="Last N RUL predictions for sparkline.")
     last_updated: datetime
     intervention_history: List[Dict[str, Any]] = Field(default_factory=list)
     pending_recommendation: Optional[Dict[str, Any]] = None

@@ -194,8 +194,8 @@ def simulate_intervention(
         "predicted_rul_after": round(predicted_rul_after, 2),
         "rul_gain": round(rul_gain, 2),
         "health_trajectory": [round(h, 4) for h in post_health_traj],
-        "rul_trajectory": [round(r, 2) for r in post_rul_traj],
-        "baseline_rul_trajectory": [round(r, 2) for r in baseline_rul_traj],
+        "rul_trajectory_intervention": [round(r, 2) for r in post_rul_traj],
+        "rul_trajectory_baseline": [round(r, 2) for r in baseline_rul_traj],
         "improvement_pct": round(improvement_pct, 2),
         "data_source": "virtual_simulation",
         # Decision support fields

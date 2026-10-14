@@ -9,7 +9,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from config import API_HOST, API_PORT, FRONTEND_DIR
+from config import API_HOST, API_PORT, FRONTEND_DIR, SELECTED_SENSORS
+from backend.digital_twin import registry
+from backend.replay import replay_manager
+from ml.train import load_trained_pipeline
+from ml.preprocess import load_cmapss
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -99,7 +103,25 @@ def create_app() -> FastAPI:
     async def health_check():
         """Simple liveness probe."""
         return {"status": "ok", "version": "1.0.0"}
+    
+    @app.on_event("startup")
+    async def initialize_test_engine():
+        """Load the trained model and prepare engines for progressive replay."""
+        try:
+            model, preprocessor, model_name = load_trained_pipeline("FD001")
 
+            for eng in ["E1", "E2", "E3", "E4"]:
+                twin = registry.get_or_create(eng)
+                twin.load_model(model, preprocessor)
+                replay_manager.get_or_create(eng, "FD001")
+
+            logger.info(
+                "Digital twin test engines initialized with model=%s (ready for progressive replay).",
+                model_name,
+            )
+
+        except Exception:
+            logger.exception("Could not initialize NASA test engines.")
     return app
 
 

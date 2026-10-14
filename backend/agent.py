@@ -56,7 +56,7 @@ class MaintenanceAgent:
         Dict matching AgentAnalysisResponse schema.
         """
         engine_id = twin_state["engine_id"]
-        predicted_rul = float(twin_state.get("predicted_rul", 100.0))
+        predicted_rul = float(twin_state.get("predicted_rul") or twin_state.get("reference_rul") or 100.0)
         health_state = twin_state.get("health_state", "Healthy")
         health_score = float(twin_state.get("health_score", 100.0))
         degradation_rate = float(twin_state.get("degradation_rate", 0.0))

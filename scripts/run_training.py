@@ -51,7 +51,7 @@ def parse_args():
         "--model",
         type=str,
         default="all",
-        choices=["all", "lstm", "gru", "cnn_lstm", "tcn", "transformer"],
+        choices=["all", "lstm", "gru", "cnn_lstm", "tcn", "transformer", "multibranch_lstm"],
         help="Specific model architecture to train (default: all)",
     )
     parser.add_argument(
@@ -109,6 +109,7 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
         build_transformer,
         get_all_models,
     )
+    from ml.multibranch_lstm import build_multibranch_lstm
     from ml.evaluate import compute_metrics
     from ml.predict import mc_dropout_predict, predict_rul, get_health_state
 
@@ -167,11 +168,21 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
         models_to_train["tcn"].compile(
             optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"]
         )
+   
     elif model_choice == "transformer":
         models_to_train = {"transformer": build_transformer(input_shape)}
         models_to_train["transformer"].compile(
-            optimizer=tf.keras.optimizers.Adam(1e-3), loss="mse", metrics=["mae"]
+            optimizer=tf.keras.optimizers.Adam(1e-3),
+            loss="mse",
+            metrics=["mae"],
         )
+    elif model_choice == "multibranch_lstm":
+        models_to_train = {
+            "multibranch_lstm": build_multibranch_lstm(
+                input_shape=input_shape,
+                feature_cols=feature_cols,
+            )
+        }
     else:
         models_to_train = get_all_models(input_shape)
 
@@ -181,7 +192,14 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
 
     for name, model in models_to_train.items():
         print(f"\n---> Training: {name.upper()}")
-        checkpoint_path = os.path.join(MODELS_DIR, f"{name}_best.keras")
+        if name == "multibranch_lstm":
+            checkpoint_path = os.path.join(
+                MODELS_DIR, "multibranch_lstm_lr0003_best.keras"
+            )
+        else:
+            checkpoint_path = os.path.join(
+               MODELS_DIR, f"{name}_best.keras"
+            )
 
         callbacks = [
             tf.keras.callbacks.EarlyStopping(
@@ -220,7 +238,12 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
         # Also save legacy .h5 copy if supported
         if name != "transformer":
             try:
-                h5_path = os.path.join(MODELS_DIR, f"{name}_best.h5")
+                if name == "multibranch_lstm":
+                    h5_path = os.path.join(
+                       MODELS_DIR, "multibranch_lstm_lr0003_best.h5"
+                    )
+                else:
+                    h5_path = os.path.join(MODELS_DIR, f"{name}_best.h5")
                 model.save(h5_path)
             except Exception:
                 pass
@@ -243,43 +266,139 @@ def run_training_workflow(subset="FD001", model_choice="all", epochs=None, quick
             "inference_time_ms": inf_latency_ms,
         })
 
-    # 4. Compare and select best
-    df_results = pd.DataFrame(results)
-
-    # Normalized composite score (lower is better)
-    for col in ["rmse", "mae", "nasa_score"]:
-        col_min = df_results[col].min()
-        col_max = df_results[col].max()
-        denom = col_max - col_min if col_max != col_min else 1.0
-        df_results[f"norm_{col}"] = (df_results[col] - col_min) / denom
-
-    df_results["composite_score"] = (
-        0.4 * df_results["norm_rmse"]
-        + 0.3 * df_results["norm_mae"]
-        + 0.3 * df_results["norm_nasa_score"]
-    )
-    df_results = df_results.sort_values("composite_score").reset_index(drop=True)
-    best_model_name = df_results.iloc[0]["model"]
-
-    # 5. Persist comparison and best model
+    
+    # 4. Compare results without overwriting the existing benchmark.
     os.makedirs(LOGS_DIR, exist_ok=True)
-    csv_path = os.path.join(LOGS_DIR, "model_comparison.csv")
-    best_path = os.path.join(LOGS_DIR, "best_model.txt")
-    df_results.to_csv(csv_path, index=False)
-    with open(best_path, "w") as f:
-        f.write(best_model_name)
 
+    if model_choice == "multibranch_lstm":
+        # This run evaluates only the new model. Do not calculate a
+        # misleading single-model composite score or select a new
+        # production model from a one-model comparison.
+        df_results = pd.DataFrame(results)
+
+        metrics_path = os.path.join(
+            LOGS_DIR,
+            f"multibranch_lstm_lr0003_{subset.lower()}_metrics.csv",
+        )
+        df_results.to_csv(metrics_path, index=False)
+
+        best_model_name = "multibranch_lstm"
+
+        print("\n" + "=" * 70)
+        print(" MULTIBRANCH LSTM EVALUATION")
+        print("=" * 70)
+        print(df_results.to_string(index=False))
+        print("-" * 70)
+        print(f"Checkpoint saved: {os.path.join(MODELS_DIR, 'multibranch_lstm_lr0003_best.keras')}")
+        print(f"Metrics saved:    {metrics_path}")
+        print("Existing best_model.txt and model_comparison.csv were preserved.")
+
+    else:
+        # Original comparison and best-model selection for existing models.
+        df_results = pd.DataFrame(results)
+
+        for col in ["rmse", "mae", "nasa_score"]:
+            col_min = df_results[col].min()
+            col_max = df_results[col].max()
+            denom = col_max - col_min if col_max != col_min else 1.0
+            df_results[f"norm_{col}"] = (df_results[col] - col_min) / denom
+
+        df_results["composite_score"] = (
+            0.4 * df_results["norm_rmse"]
+            + 0.3 * df_results["norm_mae"]
+            + 0.3 * df_results["norm_nasa_score"]
+        )
+        df_results = df_results.sort_values(
+            "composite_score"
+        ).reset_index(drop=True)
+
+        best_model_name = df_results.iloc[0]["model"]
+
+        csv_path = os.path.join(LOGS_DIR, "model_comparison.csv")
+        best_path = os.path.join(LOGS_DIR, "best_model.txt")
+
+        df_results.to_csv(csv_path, index=False)
+        with open(best_path, "w") as f:
+            f.write(best_model_name)
+
+    
     print("\n" + "=" * 70)
-    print(" MODEL EVALUATION SUMMARY")
-    print("=" * 70)
-    cols = ["model", "mae", "rmse", "r2", "nasa_score", "training_time", "composite_score"]
-    print(df_results[cols].to_string(index=False, float_format="{:.4f}".format))
-    print("-" * 70)
-    print(f"★ Selected Best Model: {best_model_name.upper()}")
-    print(f"• Checkpoint saved:    {os.path.join(MODELS_DIR, f'{best_model_name}_best.h5')}")
-    print(f"• Results saved:       {csv_path}")
 
-    # 6. Verify MC-Dropout uncertainty on test sample
+    if model_choice == "multibranch_lstm":
+        print(" MULTIBRANCH LSTM EXPERIMENT SUMMARY")
+        print("=" * 70)
+
+        cols = [
+            "model",
+            "mae",
+            "rmse",
+            "r2",
+            "nasa_score",
+            "training_time",
+            "inference_time_ms",
+        ]
+
+        print(
+            df_results[cols].to_string(
+                index=False,
+                float_format="{:.4f}".format,
+            )
+        )
+
+        print("-" * 70)
+        print("Experiment: learning rate 0.0003")
+        print("Original production-model selection remains unchanged.")
+
+        print(
+            "Checkpoint saved: "
+            + os.path.join(
+                MODELS_DIR,
+                "multibranch_lstm_lr0003_best.keras",
+            )
+        )
+
+        print(
+            "Metrics saved: "
+            + os.path.join(
+                LOGS_DIR,
+                f"multibranch_lstm_lr0003_{subset.lower()}_metrics.csv",
+            )
+        )
+
+    else:
+        print(" MODEL EVALUATION SUMMARY")
+        print("=" * 70)
+
+        cols = [
+            "model",
+            "mae",
+            "rmse",
+            "r2",
+            "nasa_score",
+            "training_time",
+            "composite_score",
+        ]
+
+        print(
+            df_results[cols].to_string(
+                index=False,
+                float_format="{:.4f}".format,
+            )
+        )
+
+        print("-" * 70)
+        print(f"Selected Best Model: {best_model_name.upper()}")
+        print(
+            "Checkpoint saved: "
+            + os.path.join(
+                MODELS_DIR,
+                f"{best_model_name}_best.h5",
+            )
+        )
+        print(f"Results saved: {csv_path}")
+
+
+ # 6. Verify MC-Dropout uncertainty on test sample
     print("\nStep 3: Verifying MC-Dropout Uncertainty Estimation...")
     sample_X = X_test[:1]
     best_model = models_to_train[best_model_name]

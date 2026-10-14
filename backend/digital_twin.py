@@ -17,6 +17,7 @@ from config import (
     EMERGENCY_RUL_THRESHOLD,
     CRITICAL_RUL_THRESHOLD,
     WARNING_RUL_THRESHOLD,
+    LOGS_DIR,
 )
 
 from datetime import datetime
@@ -51,10 +52,13 @@ class DigitalTwin:
         self.current_cycle: int = 0
         self.health_state: str = "Healthy"
         self.health_score: float = 100.0
-        self.predicted_rul: float = float(MAX_RUL)
-        self.rul_lower: float = float(MAX_RUL) * 0.85
-        self.rul_upper: float = float(MAX_RUL) * 1.15
-        self.uncertainty: float = float(MAX_RUL) * 0.15
+        self.predicted_rul: Optional[float] = None
+        self.rul_lower: Optional[float] = None
+        self.rul_upper: Optional[float] = None
+        self.uncertainty: Optional[float] = None
+        self.reference_rul: Optional[float] = None
+        self.is_warmed_up: bool = False
+        self.warmup_progress: str = f"0/{SEQUENCE_LENGTH}"
         self.degradation_rate: float = 0.0
         self.is_degradation_accelerating: bool = False
         self.risk_level: str = "Low"
@@ -62,7 +66,7 @@ class DigitalTwin:
         # ── History buffers ──────────────────────────────────────────────────
         # Each entry: {'cycle': int, 'sensors': dict, 'op_settings': dict}
         self.sensor_history: deque = deque(maxlen=200)
-        # Each entry: (cycle, rul)
+        # Each entry: (cycle, rul, reference_rul)
         self.rul_history: deque = deque(maxlen=200)
 
         # ── Intervention tracking ────────────────────────────────────────────
@@ -115,6 +119,30 @@ class DigitalTwin:
             self.is_demo_mode = False
             logger.info("Model loaded for engine %s", self.engine_id)
 
+    def reset_state(self) -> None:
+        """Reset operational state and history while retaining loaded model/preprocessor."""
+        with self._lock:
+            self.current_cycle = 0
+            self.sensor_history.clear()
+            self.rul_history.clear()
+            self.predicted_rul = None
+            self.rul_lower = None
+            self.rul_upper = None
+            self.uncertainty = None
+            self.reference_rul = None
+            self.is_warmed_up = False
+            self.warmup_progress = f"0/{SEQUENCE_LENGTH}"
+            self.health_state = "Healthy"
+            self.health_score = 100.0
+            self.degradation_rate = 0.0
+            self.is_degradation_accelerating = False
+            self.risk_level = "Low"
+            self.intervention_history = []
+            self.pending_recommendation = None
+            self.approval_status = "none"
+            self.last_updated = datetime.utcnow()
+            logger.info("Twin state reset for engine %s", self.engine_id)
+
     # ------------------------------------------------------------------
     # Sensor update & prediction
     # ------------------------------------------------------------------
@@ -124,6 +152,7 @@ class DigitalTwin:
         cycle: int,
         sensor_data: Dict[str, float],
         op_settings: Optional[Dict[str, float]] = None,
+        reference_rul: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a new sensor observation, update internal state, and return
@@ -137,6 +166,8 @@ class DigitalTwin:
             Mapping of sensor names to float values.
         op_settings:
             Optional operational settings for this cycle.
+        reference_rul:
+            Optional dataset-derived ground-truth reference RUL.
 
         Returns
         -------
@@ -144,6 +175,8 @@ class DigitalTwin:
         """
         with self._lock:
             op_settings = op_settings or {}
+            if reference_rul is not None:
+                self.reference_rul = float(reference_rul)
 
             # Append to sensor history
             self.sensor_history.append(
@@ -151,20 +184,31 @@ class DigitalTwin:
             )
             self.current_cycle = cycle
 
-            # ── Prediction ───────────────────────────────────────────────
-            if not self.is_demo_mode and self.model is not None:
-                self._predict_from_model()
+            # ── Warm-up check: genuine sequence of SEQUENCE_LENGTH required ───
+            if len(self.sensor_history) < SEQUENCE_LENGTH:
+                self.is_warmed_up = False
+                self.warmup_progress = f"{len(self.sensor_history)}/{SEQUENCE_LENGTH}"
+                self.predicted_rul = None
+                self.rul_lower = None
+                self.rul_upper = None
+                self.uncertainty = None
+                self.health_state = "Healthy"
+                self.health_score = 100.0
+                self.risk_level = "Low"
+                self.degradation_rate = 0.0
+                self.is_degradation_accelerating = False
+                self.rul_history.append((cycle, None, self.reference_rul))
             else:
-                self._synthetic_degradation(cycle)
+                self.is_warmed_up = True
+                self.warmup_progress = f"{SEQUENCE_LENGTH}/{SEQUENCE_LENGTH}"
+                if not self.is_demo_mode and self.model is not None:
+                    self._predict_from_model()
+                else:
+                    self._synthetic_degradation(cycle)
 
-            # ── Append RUL to history ─────────────────────────────────────
-            self.rul_history.append((cycle, self.predicted_rul))
-
-            # ── Compute degradation rate (slope over last 5 points) ───────
-            self._update_degradation_rate()
-
-            # ── Classify health state ─────────────────────────────────────
-            self._classify_health()
+                self.rul_history.append((cycle, self.predicted_rul, self.reference_rul))
+                self._update_degradation_rate()
+                self._classify_health()
 
             self.last_updated = datetime.utcnow()
 
@@ -265,13 +309,15 @@ class DigitalTwin:
         Estimate RUL degradation rate (cycles of life lost per operational cycle)
         using linear regression over the last 5 RUL observations.
         """
-        history = list(self.rul_history)
-        if len(history) < 2:
+        valid_history = [
+            (c, r) for c, r, *_ in list(self.rul_history) if r is not None
+        ]
+        if len(valid_history) < 2:
             self.degradation_rate = 0.0
             self.is_degradation_accelerating = False
             return
 
-        window = history[-5:]
+        window = valid_history[-5:]
         cycles = np.array([c for c, _ in window], dtype=float)
         ruls = np.array([r for _, r in window], dtype=float)
 
@@ -286,6 +332,12 @@ class DigitalTwin:
 
     def _classify_health(self) -> None:
         """Update health_state, health_score, and risk_level from predicted_rul."""
+        if not self.is_warmed_up or self.predicted_rul is None:
+            self.health_state = "Healthy"
+            self.health_score = 100.0
+            self.risk_level = "Low"
+            return
+
         rul = self.predicted_rul
 
         if rul <= 0:
@@ -321,7 +373,12 @@ class DigitalTwin:
     @property
     def status_message(self) -> str:
         """Human-readable status string derived from current state."""
-        rul = self.predicted_rul
+        if not self.is_warmed_up:
+            return (
+                f"Collecting sensor history: {len(self.sensor_history)}/{SEQUENCE_LENGTH} readings (Warm-up phase)"
+            )
+
+        rul = self.predicted_rul if self.predicted_rul is not None else 100.0
         hs = self.health_state
         rl = self.risk_level
 
@@ -348,6 +405,37 @@ class DigitalTwin:
             f"Estimated {rul:.0f} cycles of useful life remaining."
         )
 
+    def _get_model_metrics(self) -> List[Dict[str, Any]]:
+        """Load benchmark model metrics from logs/model_comparison.csv."""
+        csv_path = os.path.join(LOGS_DIR, "model_comparison.csv")
+        best_path = os.path.join(LOGS_DIR, "best_model.txt")
+        if not os.path.exists(csv_path):
+            return []
+        try:
+            best_name = ""
+            if os.path.exists(best_path):
+                with open(best_path, "r") as f:
+                    best_name = f.read().strip().lower()
+
+            df = pd.read_csv(csv_path)
+            metrics = []
+            for _, row in df.iterrows():
+                m_name = str(row["model"])
+                metrics.append({
+                    "model_name": m_name,
+                    "model": m_name,
+                    "mae": round(float(row.get("mae", 0.0)), 2),
+                    "rmse": round(float(row.get("rmse", 0.0)), 2),
+                    "r2": round(float(row.get("r2", 0.0)), 4),
+                    "score": round(float(row.get("composite_score", 0.0)), 3),
+                    "selected": m_name.lower() == best_name,
+                    "is_best": m_name.lower() == best_name,
+                })
+            return metrics
+        except Exception as exc:
+            logger.warning("Could not read model metrics: %s", exc)
+            return []
+
     def to_dict(self) -> Dict[str, Any]:
         """Serialise full twin state to a dict matching EngineStateResponse schema."""
         # Latest sensor readings
@@ -356,26 +444,33 @@ class DigitalTwin:
             latest_sensors = dict(self.sensor_history[-1].get("sensors", {}))
 
         # Recent RUL trend (last 20 points)
-        recent_rul_trend = [r for _, r in list(self.rul_history)[-20:]]
+        recent_rul_trend = [
+            round(item[1], 2) if len(item) > 1 and item[1] is not None else None
+            for item in list(self.rul_history)[-20:]
+        ]
 
         return {
             "engine_id": self.engine_id,
             "current_cycle": self.current_cycle,
             "health_state": self.health_state,
             "health_score": round(self.health_score, 2),
-            "predicted_rul": round(self.predicted_rul, 2),
-            "rul_lower": round(self.rul_lower, 2),
-            "rul_upper": round(self.rul_upper, 2),
-            "uncertainty": round(self.uncertainty, 2),
+            "predicted_rul": round(self.predicted_rul, 2) if self.predicted_rul is not None else None,
+            "rul_lower": round(self.rul_lower, 2) if self.rul_lower is not None else None,
+            "rul_upper": round(self.rul_upper, 2) if self.rul_upper is not None else None,
+            "uncertainty": round(self.uncertainty, 2) if self.uncertainty is not None else None,
+            "reference_rul": round(self.reference_rul, 2) if self.reference_rul is not None else None,
+            "is_warmed_up": self.is_warmed_up,
+            "warmup_progress": f"{min(len(self.sensor_history), SEQUENCE_LENGTH)}/{SEQUENCE_LENGTH}",
             "degradation_rate": round(self.degradation_rate, 4),
             "is_degradation_accelerating": self.is_degradation_accelerating,
             "risk_level": self.risk_level,
             "sensor_readings": latest_sensors,
-            "recent_rul_trend": [round(r, 2) for r in recent_rul_trend],
+            "recent_rul_trend": recent_rul_trend,
             "last_updated": self.last_updated.isoformat(),
             "intervention_history": self.intervention_history,
             "pending_recommendation": self.pending_recommendation,
             "status_message": self.status_message,
+            "model_metrics": self._get_model_metrics(),
         }
 
     # ------------------------------------------------------------------
@@ -474,9 +569,16 @@ class DigitalTwin:
         """
         with self._lock:
             recent_rul = list(self.rul_history)[-n_cycles:]
-            rul_records = [
-                {"cycle": c, "rul": round(r, 2)} for c, r in recent_rul
-            ]
+            rul_records = []
+            for item in recent_rul:
+                c = item[0]
+                r = item[1] if len(item) > 1 else None
+                ref = item[2] if len(item) > 2 else self.reference_rul
+                rul_records.append({
+                    "cycle": c,
+                    "rul": round(r, 2) if r is not None else None,
+                    "reference_rul": round(ref, 2) if ref is not None else None,
+                })
 
             recent_sensors = list(self.sensor_history)[-n_cycles:]
             sensor_trends: Dict[str, List[Dict[str, Any]]] = {}

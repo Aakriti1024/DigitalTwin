@@ -1,0 +1,2 @@
+model,mae,rmse,r2,nasa_score,training_time,inference_time_ms
+multibranch_lstm,10.415946807861328,14.887987180226345,0.8619735673842431,471.1010836807048,119.0,6.51
